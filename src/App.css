@@ -1,0 +1,242 @@
+import React, { useState, useEffect } from "react";
+
+// Configuración de hábitos iniciales
+const INITIAL_HABITS = [
+  { id: "meditar", label: "Meditar (10 min)", icon: "🧘" },
+  { id: "agua", label: "2L de Agua", icon: "💧" },
+  { id: "omega", label: "Omega 3 / Vitaminas", icon: "💊" },
+  { id: "lectura", label: "Escritura/Lectura", icon: "📖" },
+];
+
+// --- COMPONENTE DE LA GRÁFICA (SVG DINÁMICO) ---
+const BankrollGraph = ({ history }) => {
+  if (history.length < 2) {
+    return (
+      <div style={{ height: 80, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#4a4a6a", border: "1px dashed #2a2a3a", borderRadius: 8, marginTop: 15 }}>
+        Graficando varianza... (necesitas al menos 2 sesiones)
+      </div>
+    );
+  }
+
+  const width = 100;
+  const height = 40;
+  const min = Math.min(...history);
+  const max = Math.max(...history);
+  const range = max - min || 1;
+
+  // Mapeo de puntos al espacio del SVG
+  const points = history
+    .map((val, i) => {
+      const x = (i / (history.length - 1)) * width;
+      const y = height - ((val - min) / range) * height;
+      return `${x},${y}`;
+    })
+    .join(" ");
+
+  return (
+    <div style={{ marginTop: 20, borderTop: "1px solid #1a1a2a", paddingTop: 15 }}>
+      <svg viewBox={`0 0 ${width} ${height}`} style={{ width: "100%", height: 80, overflow: "visible" }}>
+        <polyline
+          fill="none"
+          stroke="#6adb6a"
+          strokeWidth="1.5"
+          strokeLinejoin="round"
+          points={points}
+          style={{ filter: "drop-shadow(0px 0px 3px rgba(106, 219, 106, 0.4))" }}
+        />
+      </svg>
+    </div>
+  );
+};
+
+// --- APLICACIÓN PRINCIPAL ---
+export default function App() {
+  // Estado con Persistencia (LocalStorage)
+  const [poker, setPoker] = useState(() => Number(localStorage.getItem("poker")) || 50);
+  const [sessions, setSessions] = useState(() => JSON.parse(localStorage.getItem("sessions")) || []);
+  const [dailyHabits, setDailyHabits] = useState(() => JSON.parse(localStorage.getItem("dailyHabits")) || {});
+  
+  const [tab, setTab] = useState("dashboard");
+  const [amount, setAmount] = useState("");
+  const [note, setNote] = useState("");
+
+  // Guardar automáticamente cada vez que algo cambie
+  useEffect(() => {
+    localStorage.setItem("poker", poker);
+    localStorage.setItem("sessions", JSON.stringify(sessions));
+    localStorage.setItem("dailyHabits", JSON.stringify(dailyHabits));
+  }, [poker, sessions, dailyHabits]);
+
+  // Lógica para añadir sesión
+  const handleAddSession = (isWin) => {
+    const val = parseFloat(amount);
+    if (!val) return;
+
+    const netAmount = isWin ? val : -val;
+    const newSession = {
+      id: Date.now(),
+      amount: netAmount,
+      note: note,
+      date: new Date().toLocaleDateString("es-MX", { day: "2-digit", month: "short" }),
+    };
+
+    setSessions([newSession, ...sessions]);
+    setPoker((prev) => +(prev + netAmount).toFixed(2));
+    setAmount("");
+    setNote("");
+    setTab("dashboard");
+  };
+
+  // Preparar datos para la gráfica
+  const getGraphData = () => {
+    let current = 50; // Punto de partida inicial
+    const data = [50];
+    [...sessions].reverse().forEach((s) => {
+      current += s.amount;
+      data.push(current);
+    });
+    return data;
+  };
+
+  return (
+    <div style={{ 
+      fontFamily: "'Georgia', serif", 
+      background: "#0a0a0f", 
+      minHeight: "100vh", 
+      color: "#e8e0d0", 
+      maxWidth: 480, 
+      margin: "0 auto", 
+      padding: "20px 20px 100px" 
+    }}>
+      
+      {/* Header */}
+      <header style={{ marginBottom: 30, borderBottom: "1px solid #1a1a2a", paddingBottom: 15 }}>
+        <h1 style={{ fontSize: 22, fontWeight: "bold", margin: 0, letterSpacing: "-0.5px" }}>Diego’s Edge</h1>
+        <div style={{ fontSize: 10, color: "#5a5a7a", letterSpacing: 3, textTransform: "uppercase", marginTop: 4 }}>
+          Logbook & Performance
+        </div>
+      </header>
+
+      {tab === "dashboard" && (
+        <div style={{ animation: "fadeIn 0.4s ease-out" }}>
+          {/* Card Principal */}
+          <div style={{ 
+            background: "linear-gradient(135deg, #111120 0%, #0d0d1a 100%)", 
+            padding: 24, 
+            borderRadius: 16, 
+            border: "1px solid #2a2a3a",
+            boxShadow: "0 10px 30px rgba(0,0,0,0.5)"
+          }}>
+            <div style={{ fontSize: 11, color: "#7a7a9a", letterSpacing: 1, marginBottom: 8 }}>CURRENT BANKROLL</div>
+            <div style={{ fontSize: 38, fontWeight: "bold", color: poker >= 50 ? "#6adb6a" : "#db6a6a" }}>
+              ${poker.toFixed(2)} <span style={{ fontSize: 14, color: "#4a4a6a" }}>USD</span>
+            </div>
+            <BankrollGraph history={getGraphData()} />
+          </div>
+
+          {/* Hábitos Check-in */}
+          <div style={{ marginTop: 25 }}>
+            <div style={{ fontSize: 10, color: "#5a5a7a", letterSpacing: 2, marginBottom: 12, textTransform: "uppercase" }}>Pre-Session Habits</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              {INITIAL_HABITS.map((h) => (
+                <div 
+                  key={h.id} 
+                  onClick={() => setDailyHabits({ ...dailyHabits, [h.id]: !dailyHabits[h.id] })}
+                  style={{ 
+                    padding: 14, 
+                    borderRadius: 12, 
+                    cursor: "pointer", 
+                    fontSize: 12,
+                    background: dailyHabits[h.id] ? "#1a3a1a" : "#111120",
+                    border: `1px solid ${dailyHabits[h.id] ? "#4a8a4a" : "#2a2a3a"}`,
+                    transition: "all 0.2s ease"
+                  }}
+                >
+                  {h.icon} {h.label}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Historial Breve */}
+          <div style={{ marginTop: 30 }}>
+             <div style={{ fontSize: 10, color: "#5a5a7a", letterSpacing: 2, marginBottom: 12, textTransform: "uppercase" }}>Recent Activity</div>
+             {sessions.slice(0, 3).map(s => (
+               <div key={s.id} style={{ display: "flex", justifyContent: "space-between", padding: "12px 0", borderBottom: "1px solid #1a1a2a" }}>
+                  <div style={{ fontSize: 13 }}>{s.date} <span style={{ color: "#4a4a6a", marginLeft: 8 }}>{s.note}</span></div>
+                  <div style={{ fontWeight: "bold", color: s.amount > 0 ? "#6adb6a" : "#db6a6a" }}>
+                    {s.amount > 0 ? "+" : ""}{s.amount.toFixed(2)}
+                  </div>
+               </div>
+             ))}
+          </div>
+        </div>
+      )}
+
+      {tab === "registrar" && (
+        <div style={{ animation: "slideUp 0.3s ease-out" }}>
+          <div style={{ fontSize: 11, color: "#7a7a9a", marginBottom: 20 }}>NEW SESSION ENTRY</div>
+          
+          <input 
+            type="number" 
+            value={amount} 
+            onChange={(e) => setAmount(e.target.value)} 
+            placeholder="0.00" 
+            autoFocus
+            style={{ 
+              width: "100%", background: "none", border: "none", color: "#e8e0d0", 
+              fontSize: 56, textAlign: "center", marginBottom: 20, outline: "none", fontFamily: "Georgia" 
+            }} 
+          />
+
+          <input 
+            type="text" 
+            value={note} 
+            onChange={(e) => setNote(e.target.value)} 
+            placeholder="Nota de sesión (ej. NL2 6-max)" 
+            style={{ 
+              width: "100%", padding: 15, background: "#111120", border: "1px solid #2a2a3a", 
+              borderRadius: 10, color: "#e8e0d0", marginBottom: 25, boxSizing: "border-box" 
+            }} 
+          />
+
+          <div style={{ display: "flex", gap: 12 }}>
+            <button 
+              onClick={() => handleAddSession(true)}
+              style={{ flex: 1, padding: 18, borderRadius: 12, border: "none", background: "#1a3a1a", color: "#6adb6a", fontWeight: "bold", cursor: "pointer" }}
+            >
+              PROFIT
+            </button>
+            <button 
+              onClick={() => handleAddSession(false)}
+              style={{ flex: 1, padding: 18, borderRadius: 12, border: "none", background: "#3a1a1a", color: "#db6a6a", fontWeight: "bold", cursor: "pointer" }}
+            >
+              LOSS
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Navegación Inferior */}
+      <nav style={{ 
+        position: "fixed", bottom: 0, left: 0, right: 0, height: 75,
+        background: "rgba(13, 13, 26, 0.95)", backdropFilter: "blur(10px)",
+        borderTop: "1px solid #2a2a3a", display: "flex", justifyContent: "space-around", alignItems: "center"
+      }}>
+        <button onClick={() => setTab("dashboard")} style={{ background: "none", border: "none", color: tab === "dashboard" ? "#8ab4f8" : "#4a4a6a", cursor: "pointer" }}>
+          <div style={{ fontSize: 20 }}>◈</div>
+          <div style={{ fontSize: 9, marginTop: 4 }}>ESTADO</div>
+        </button>
+        <button onClick={() => setTab("registrar")} style={{ background: "none", border: "none", color: tab === "registrar" ? "#8ab4f8" : "#4a4a6a", cursor: "pointer" }}>
+          <div style={{ fontSize: 20 }}>+</div>
+          <div style={{ fontSize: 9, marginTop: 4 }}>SESIÓN</div>
+        </button>
+      </nav>
+
+      <style>{`
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+      `}</style>
+    </div>
+  );
+}
