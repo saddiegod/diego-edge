@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { supabase } from "./supabase"; // Importamos la conexión a la nube
+import { supabase } from "./supabase";
 
 const RULES = {
   cash: [
@@ -49,6 +49,8 @@ export default function BankrollManager() {
   const [poker, setPoker] = useState(INITIAL.poker);
   const [sports, setSports] = useState(INITIAL.sports);
   const [sessions, setSessions] = useState([]);
+  const [archivedSessions, setArchivedSessions] = useState([]);
+  const [showArchived, setShowArchived] = useState(false);
   const [habits, setHabits] = useState({ meditar: false, agua: false, omega: false });
   const [loading, setLoading] = useState(true);
   
@@ -74,10 +76,16 @@ export default function BankrollManager() {
       .order('id', { ascending: false });
     
     if (data) {
-      setSessions(data);
-      // Recalcular bankrolls basados en el historial de la nube
-      const pk = data.filter(s => s.type !== 'sports').reduce((acc, s) => acc + s.amount, INITIAL.poker);
-      const sp = data.filter(s => s.type === 'sports').reduce((acc, s) => acc + s.amount, INITIAL.sports);
+      // Separar activas de archivadas
+      const active = data.filter(s => !s.archived);
+      const archived = data.filter(s => s.archived);
+      
+      setSessions(active);
+      setArchivedSessions(archived);
+      
+      // Recalcular bankrolls SOLO basados en el historial activo
+      const pk = active.filter(s => s.type !== 'sports').reduce((acc, s) => acc + s.amount, INITIAL.poker);
+      const sp = active.filter(s => s.type === 'sports').reduce((acc, s) => acc + s.amount, INITIAL.sports);
       setPoker(pk);
       setSports(sp);
     }
@@ -97,6 +105,7 @@ export default function BankrollManager() {
       note: form.note,
       buyin: form.buyin,
       date: new Date().toLocaleDateString("es-MX", { day: "2-digit", month: "short" }),
+      archived: false // Por defecto, es una sesión activa
     };
 
     const { error } = await supabase.from('sessions').insert([newSession]);
@@ -112,21 +121,26 @@ export default function BankrollManager() {
     }
   };
 
-  // --- FUNCIÓN: RESET TOTAL (PARA PRUEBAS) ---
-  const resetSystem = async () => {
-    const confirmReset = window.confirm("⚠️ ¿ESTÁS SEGURO? Esto borrará TODO el historial en la nube y reiniciará tus fondos a los valores iniciales.");
+  // --- FUNCIÓN: ARCHIVAR DATOS (SOFT DELETE) ---
+  const archiveSystem = async () => {
+    const confirmReset = window.confirm("⚠️ ¿Archivar todos los datos? Empezarás tu bankroll desde cero, pero podrás ver el historial en la papelera.");
     
     if (confirmReset) {
-      const { error } = await supabase.from('sessions').delete().neq('id', 0); // Borra todo
+      // Tomamos los IDs de las sesiones activas
+      const idsToArchive = sessions.map(s => s.id);
+      if (idsToArchive.length === 0) return;
+
+      // Actualizamos esas sesiones en la nube para que archived = true
+      const { error } = await supabase.from('sessions').update({ archived: true }).in('id', idsToArchive);
+      
       if (!error) {
-        setSessions([]);
-        setPoker(INITIAL.poker);
-        setSports(INITIAL.sports);
+        // Recargamos los datos desde la nube para actualizar las listas
+        fetchData();
         setHabits({ meditar: false, agua: false, omega: false });
-        alert("Sistema reseteado con éxito.");
+        alert("Datos archivados con éxito.");
         setTab("dashboard");
       } else {
-        alert("Error al resetear: " + error.message);
+        alert("Error al archivar: " + error.message);
       }
     }
   };
@@ -155,10 +169,10 @@ export default function BankrollManager() {
 
   return (
     <div style={{ fontFamily: "'Georgia', serif", background: "#0a0a0f", minHeight: "100vh", color: "#e8e0d0", maxWidth: 480, margin: "0 auto", padding: "0 0 80px" }}>
-      {/* Header */}
+      {/* Header (Nuevos Títulos) */}
       <div style={{ background: "linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)", padding: "24px 20px 16px", borderBottom: "1px solid #2a2a4a" }}>
-        <div style={{ fontSize: 11, letterSpacing: 4, color: "#7a7a9a", textTransform: "uppercase", marginBottom: 4 }}>Gestión de Bankroll</div>
-        <div style={{ fontSize: 22, fontWeight: "bold", color: "#e8e0d0", letterSpacing: -0.5 }}>Diego’s Edge System</div>
+        <div style={{ fontSize: 11, letterSpacing: 4, color: "#7a7a9a", textTransform: "uppercase", marginBottom: 4 }}>Gestión</div>
+        <div style={{ fontSize: 28, fontWeight: "bold", color: "#e8e0d0", letterSpacing: -0.5 }}>Diego's Bankroll</div>
       </div>
 
       {/* Status bar */}
@@ -259,7 +273,7 @@ export default function BankrollManager() {
         )}
 
         {tab === "registrar" && (
-          <div>
+          <div style={{ background: "#111120", border: "1px solid #2a2a3a", borderRadius: 12, padding: 16 }}>
             <div style={{ fontSize: 10, letterSpacing: 3, color: "#7a7a9a", textTransform: "uppercase", marginBottom: 16 }}>Nueva Sesión</div>
             <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
               {["cash", "tournament", "sports"].map((t) => (
@@ -279,21 +293,33 @@ export default function BankrollManager() {
             </div>
             <input type="number" placeholder={form.type === "sports" ? "Monto en MXN" : "Monto en USD"}
               value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })}
-              style={{ width: "100%", padding: "14px", borderRadius: 8, border: "1px solid #2a2a4a", background: "#111120", color: "#e8e0d0", fontSize: 16, fontFamily: "Georgia, serif", boxSizing: "border-box", marginBottom: 12 }}
+              style={{ width: "100%", padding: "14px", borderRadius: 8, border: "1px solid #2a2a4a", background: "#0a0a0f", color: "#e8e0d0", fontSize: 16, fontFamily: "Georgia, serif", boxSizing: "border-box", marginBottom: 12 }}
             />
             <input type="text" placeholder="Nota (opcional)"
               value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })}
-              style={{ width: "100%", padding: "14px", borderRadius: 8, border: "1px solid #2a2a4a", background: "#111120", color: "#e8e0d0", fontSize: 14, fontFamily: "Georgia, serif", boxSizing: "border-box", marginBottom: 16 }}
+              style={{ width: "100%", padding: "14px", borderRadius: 8, border: "1px solid #2a2a4a", background: "#0a0a0f", color: "#e8e0d0", fontSize: 14, fontFamily: "Georgia, serif", boxSizing: "border-box", marginBottom: 16 }}
             />
             <button onClick={addSession} style={{ width: "100%", padding: "16px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 15, background: "#2a4a8a", color: "#e8e0d0", fontFamily: "Georgia, serif", fontWeight: "bold" }}>Registrar Sesión</button>
           </div>
         )}
 
         {tab === "historial" && (
-          <div>
-            <div style={{ fontSize: 10, letterSpacing: 3, color: "#7a7a9a", textTransform: "uppercase", marginBottom: 16 }}>Historial Sincronizado</div>
-            {sessions.map((s) => (
-              <div key={s.id} style={{ background: "#111120", border: `1px solid ${s.amount > 0 ? "#2a4a2a" : "#4a2a2a"}`, borderRadius: 10, padding: 14, marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ background: "#111120", border: "1px solid #2a2a3a", borderRadius: 12, padding: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <div style={{ fontSize: 10, letterSpacing: 3, color: "#7a7a9a", textTransform: "uppercase" }}>
+                {showArchived ? "Papelera" : "Historial Activo"}
+              </div>
+              <button onClick={() => setShowArchived(!showArchived)} style={{ fontSize: 10, background: "none", border: "1px solid #3a3a5a", color: "#8ab4f8", borderRadius: 4, padding: "4px 8px", cursor: "pointer" }}>
+                Ver {showArchived ? "Activos" : "Eliminados"}
+              </button>
+            </div>
+            
+            {(showArchived ? archivedSessions : sessions).length === 0 && (
+              <div style={{ textAlign: "center", color: "#5a5a7a", fontSize: 12, padding: "20px 0" }}>No hay registros aquí.</div>
+            )}
+
+            {(showArchived ? archivedSessions : sessions).map((s) => (
+              <div key={s.id} style={{ background: "#0a0a0f", border: `1px solid ${s.amount > 0 ? "#2a4a2a" : "#4a2a2a"}`, borderRadius: 10, padding: 14, marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center", opacity: showArchived ? 0.6 : 1 }}>
                 <div>
                   <div style={{ fontSize: 13, color: "#c0b8a8" }}>{s.type.toUpperCase()} · {s.note}</div>
                   <div style={{ fontSize: 11, color: "#5a5a7a" }}>{s.date}</div>
@@ -305,11 +331,11 @@ export default function BankrollManager() {
         )}
 
         {tab === "reglas" && (
-          <div>
+          <div style={{ background: "#111120", border: "1px solid #2a2a3a", borderRadius: 12, padding: 16 }}>
             <div style={{ fontSize: 10, letterSpacing: 3, color: "#7a7a9a", textTransform: "uppercase", marginBottom: 16 }}>Reglas y Sistema</div>
             {Object.keys(RULES).map(key => (
               <div key={key} style={{ marginBottom: 12 }}>
-                <button onClick={() => setShowRules(showRules === key ? null : key)} style={{ width: "100%", textAlign: "left", padding: "14px", borderRadius: 10, border: "1px solid #2a2a3a", background: "#111120", color: "#e8e0d0", fontFamily: "Georgia", cursor: "pointer" }}>
+                <button onClick={() => setShowRules(showRules === key ? null : key)} style={{ width: "100%", textAlign: "left", padding: "14px", borderRadius: 10, border: "1px solid #2a2a3a", background: "#0a0a0f", color: "#e8e0d0", fontFamily: "Georgia", cursor: "pointer" }}>
                   {key.toUpperCase()} {showRules === key ? "▲" : "▼"}
                 </button>
                 {showRules === key && (
@@ -320,10 +346,10 @@ export default function BankrollManager() {
               </div>
             ))}
             
-            {/* BOTÓN DE RESET (PARA PRUEBAS) */}
+            {/* BOTÓN DE BORRADO LÓGICO */}
             <div style={{ marginTop: "40px", borderTop: "1px solid #2a2a3a", paddingTop: "20px" }}>
-              <button onClick={resetSystem} style={{ width: "100%", padding: "12px", borderRadius: 10, background: "transparent", border: "1px solid #4a1a1a", color: "#cc3333", fontSize: "11px", cursor: "pointer", fontFamily: "Georgia" }}>
-                RESETEAR TODO EL SISTEMA (TEST)
+              <button onClick={archiveSystem} style={{ width: "100%", padding: "12px", borderRadius: 10, background: "transparent", border: "1px solid #4a1a1a", color: "#cc3333", fontSize: "11px", cursor: "pointer", fontFamily: "Georgia" }}>
+                BORRAR DATOS (ARCHIVAR)
               </button>
             </div>
           </div>
