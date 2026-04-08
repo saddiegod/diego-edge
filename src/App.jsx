@@ -366,6 +366,27 @@ export default function App() {
             </div>
           </div>
 
+{/* --- PEGA ESTO AQUÍ: BOTÓN TEMPORAL DE NOTIFICACIONES --- */}
+            <button 
+              onClick={async () => {
+                if (!('Notification' in window)) {
+                  alert("Tu navegador no soporta notificaciones.");
+                  return;
+                }
+                const permission = await Notification.requestPermission();
+                if (permission === 'granted') {
+                  new Notification("♠️ Diego's Edge", {
+                    body: "¡Permisos de sistema activados con éxito!"
+                  });
+                } else {
+                  alert("Permiso denegado por el sistema operativo.");
+                }
+              }} 
+              style={{ width: "100%", padding: "12px", marginTop: "16px", borderRadius: 8, border: "1px solid #60a5fa", background: "#0d1b2a", color: "#60a5fa", fontSize: "11px", cursor: "pointer", fontFamily: "Georgia", textTransform: "uppercase", fontWeight: "bold", letterSpacing: 1 }}>
+              🔔 Activar Notificaciones Nativas
+            </button>
+            {/* --- FIN DEL BOTÓN --- */}
+            
           {/* Poker ladder */}
           <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: 14, marginBottom: 12 }}>
             <div style={{ fontSize: 9, letterSpacing: 3, color: C.muted, textTransform: "uppercase", marginBottom: 10 }}>Escalera Poker</div>
