@@ -148,7 +148,7 @@ export default function App() {
       }
 
       // 10:00 PM - Resumen del Día
-      if (hours === 22 && minutes === 0 && !notifiedToday.night) {
+      if (hours === 22 && minutes === 45 && !notifiedToday.night) {
         const todaySessions = active.filter(s => s.date === todayStr && s.type !== "leak");
         if (todaySessions.length > 0) {
             let pokerTotal = 0;
