@@ -8,8 +8,8 @@ export default defineConfig({
     VitePWA({ 
       registerType: 'autoUpdate',
       manifest: {
-        name: "Diego's Edge",
-        short_name: "Edge",
+        name: "Diego's Bankroll",
+        short_name: "Diego",
         theme_color: "#0a0a0f",
         background_color: "#0a0a0f",
         display: "standalone",
