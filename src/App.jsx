@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { supabase } from "./supabase"; // <-- Motor de nube reconectado
 
 const RULES = {
   cash: [
@@ -73,60 +74,84 @@ export default function App() {
   const [flash, setFlash] = useState(null);
   const [showArchived, setShowArchived] = useState(false);
 
+  // --- NUBE: CARGAR DATOS ---
   const load = useCallback(async () => {
     try {
-      const s = await window.storage.get("bk_sessions");
-      const h = await window.storage.get("bk_habits");
-      const t = await window.storage.get("bk_tilt");
-      if (s) {
-        const all = JSON.parse(s.value);
-        setSessions(all);
-        const active = all.filter(x => !x.archived);
+      const { data: sData } = await supabase.from('sessions').select('*').order('id', { ascending: false });
+      const { data: hData } = await supabase.from('daily_habits').select('*');
+
+      if (sData) {
+        setSessions(sData);
+        const active = sData.filter(x => !x.archived);
         setPoker(active.filter(x => x.type !== "sports").reduce((a, x) => a + x.amount, INIT_POKER));
         setSports(active.filter(x => x.type === "sports").reduce((a, x) => a + x.amount, INIT_SPORTS));
       }
-      if (h) setHabits(JSON.parse(h.value));
-      if (t) setTilt(JSON.parse(t.value));
-    } catch (_) {}
+
+      if (hData) {
+        const loadedHabits = { meditar: false, agua: false, omega: false, ejercicio: false };
+        const loadedTilt = {};
+        hData.forEach(item => {
+          if (item.id.startsWith('tilt_')) {
+            loadedTilt[item.id.replace('tilt_', '')] = item.status;
+          } else {
+            loadedHabits[item.id] = item.status;
+          }
+        });
+        setHabits(loadedHabits);
+        setTilt(loadedTilt);
+      }
+    } catch (error) {
+      console.error("Error cargando desde Supabase:", error);
+    }
     setLoaded(true);
   }, []);
 
   useEffect(() => { load(); }, [load]);
 
-  const save = async (key, val) => {
-    try { await window.storage.set(key, JSON.stringify(val)); } catch (_) {}
-  };
-
+  // --- NUBE: GUARDAR SESIÓN ---
   const addSession = async () => {
     const amt = parseFloat(form.amount);
     if (!amt || amt <= 0) return;
     const value = form.result === "win" ? amt : -amt;
+    
     const s = {
-      id: Date.now(), type: form.type, amount: value, note: form.note,
+      id: Date.now(), 
+      type: form.type, 
+      amount: value, 
+      note: form.note,
       date: new Date().toLocaleDateString("es-MX", { day: "2-digit", month: "short" }),
       archived: false,
     };
-    const next = [s, ...sessions];
-    setSessions(next);
-    if (form.type === "sports") setSports(p => parseFloat((p + value).toFixed(2)));
-    else setPoker(p => parseFloat((p + value).toFixed(2)));
-    await save("bk_sessions", next);
-    setForm({ ...form, amount: "", note: "" });
-    setFlash(value > 0 ? "win" : "loss");
-    setTimeout(() => setFlash(null), 1000);
-    setTab("dash");
+
+    const { error } = await supabase.from('sessions').insert([s]);
+
+    if (!error) {
+      const next = [s, ...sessions];
+      setSessions(next);
+      if (form.type === "sports") setSports(p => parseFloat((p + value).toFixed(2)));
+      else setPoker(p => parseFloat((p + value).toFixed(2)));
+      
+      setForm({ ...form, amount: "", note: "" });
+      setFlash(value > 0 ? "win" : "loss");
+      setTimeout(() => setFlash(null), 1000);
+      setTab("dash");
+    } else {
+      alert("Error al guardar en la nube.");
+    }
   };
 
+  // --- NUBE: TOGGLE HÁBITOS ---
   const toggleHabit = async (k) => {
-    const next = { ...habits, [k]: !habits[k] };
-    setHabits(next);
-    await save("bk_habits", next);
+    const nextVal = !habits[k];
+    setHabits({ ...habits, [k]: nextVal });
+    await supabase.from('daily_habits').upsert({ id: k, status: nextVal });
   };
 
+  // --- NUBE: TOGGLE TILT ---
   const toggleTilt = async (k) => {
-    const next = { ...tilt, [k]: !tilt[k] };
-    setTilt(next);
-    await save("bk_tilt", next);
+    const nextVal = !tilt[k];
+    setTilt({ ...tilt, [k]: nextVal });
+    await supabase.from('daily_habits').upsert({ id: `tilt_${k}`, status: nextVal });
   };
 
   const tiltScore = TILT_QS.filter(q => tilt[q.id]).length;
@@ -135,15 +160,31 @@ export default function App() {
 
   const active = sessions.filter(x => !x.archived);
   const archived = sessions.filter(x => x.archived);
+  
   const pokerSessions = active.filter(x => x.type !== "sports");
+  const sportsSessions = active.filter(x => x.type === "sports"); // <-- Filtrado deportivo
+  
   const pokerWins = pokerSessions.filter(x => x.amount > 0).length;
   const pokerProfit = parseFloat((poker - INIT_POKER).toFixed(2));
   const sportsProfit = parseFloat((sports - INIT_SPORTS).toFixed(2));
 
+  // --- GRÁFICA POKER ---
   const sparkPoints = (() => {
     const pts = [INIT_POKER];
     let cur = INIT_POKER;
     [...pokerSessions].reverse().forEach(s => { cur = parseFloat((cur + s.amount).toFixed(2)); pts.push(cur); });
+    if (pts.length < 2) return null;
+    const W = 120, H = 32;
+    const mn = Math.min(...pts) - 1, mx = Math.max(...pts) + 1;
+    const range = mx - mn || 1;
+    return pts.map((v, i) => `${(i / (pts.length - 1)) * W},${H - ((v - mn) / range) * H}`).join(" ");
+  })();
+
+  // --- GRÁFICA DEPORTIVAS ---
+  const sparkSports = (() => {
+    const pts = [INIT_SPORTS];
+    let cur = INIT_SPORTS;
+    [...sportsSessions].reverse().forEach(s => { cur = parseFloat((cur + s.amount).toFixed(2)); pts.push(cur); });
     if (pts.length < 2) return null;
     const W = 120, H = 32;
     const mn = Math.min(...pts) - 1, mx = Math.max(...pts) + 1;
@@ -184,7 +225,7 @@ export default function App() {
 
   if (!loaded) return (
     <div style={{ background: C.bg, height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: C.muted, fontFamily: "monospace", letterSpacing: 3, fontSize: 11 }}>
-      CARGANDO...
+      CONECTANDO A SUPABASE...
     </div>
   );
 
@@ -232,7 +273,11 @@ export default function App() {
               <div style={{ fontSize: 11, color: sportsProfit >= 0 ? C.blue : C.red, marginTop: 3 }}>
                 {sgn(sportsProfit)}{fmt(sportsProfit, 0)} · {sgn(sportsProfit)}{fmt(((sportsProfit / INIT_SPORTS) * 100), 1)}%
               </div>
-              <div style={{ fontSize: 10, color: C.muted, marginTop: 12 }}>Max: ${fmt(sports * 0.05, 0)} MXN/apuesta</div>
+              {sparkSports && (
+                <svg viewBox="0 0 120 32" style={{ width: "100%", height: 24, marginTop: 8, display: "block" }}>
+                  <polyline fill="none" stroke={sportsProfit >= 0 ? C.blue : C.red} strokeWidth="1.5" strokeLinejoin="round" points={sparkSports} />
+                </svg>
+              )}
             </div>
           </div>
 
@@ -397,20 +442,23 @@ export default function App() {
 
             <div style={{ marginTop: 24, borderTop: `1px solid ${C.border}`, paddingTop: 16 }}>
               <button onClick={async () => {
-                if (!confirm("¿Archivar todos los datos y empezar desde cero?")) return;
+                if (!confirm("¿Archivar todos los datos en la nube y empezar desde cero?")) return;
+                
+                const activeIds = sessions.filter(s => !s.archived).map(s => s.id);
+                if(activeIds.length > 0) {
+                  await supabase.from('sessions').update({ archived: true }).in('id', activeIds);
+                }
+                await supabase.from('daily_habits').delete().neq('id', 'dummy');
+
                 const next = sessions.map(s => ({ ...s, archived: true }));
                 setSessions(next);
                 setPoker(INIT_POKER);
                 setSports(INIT_SPORTS);
-                const emptyH = { meditar: false, agua: false, omega: false, ejercicio: false };
-                setHabits(emptyH);
+                setHabits({ meditar: false, agua: false, omega: false, ejercicio: false });
                 setTilt({});
-                await save("bk_sessions", next);
-                await save("bk_habits", emptyH);
-                await save("bk_tilt", {});
                 setTab("dash");
               }} style={{ width: "100%", padding: 12, borderRadius: 10, background: "transparent", border: `1px solid ${C.redD}`, color: "#aa3333", fontSize: 10, cursor: "pointer", fontFamily: "Georgia", letterSpacing: 2 }}>
-                ARCHIVAR Y RESETEAR
+                ARCHIVAR Y RESETEAR EN LA NUBE
               </button>
             </div>
           </div>
