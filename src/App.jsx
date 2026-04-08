@@ -49,6 +49,9 @@ const TILT_QS = [
 
 const POSITIONS = ["UTG", "MP", "HJ", "CO", "BTN", "SB", "BB", "General"];
 
+const INIT_POKER = 50;
+const INIT_SPORTS = 500;
+
 const C = {
   bg: "#07070f", surface: "#0d0d1c", card: "#111122",
   border: "#1c1c35", green: "#4ade80", greenD: "#14532d",
@@ -60,6 +63,13 @@ const fmt = (n, d = 2) => Number(n).toFixed(d);
 const sgn = (n) => (n >= 0 ? "+" : "");
 
 export default function App() {
+  // Estados de Autenticación
+  const [session, setSession] = useState(null);
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [isLogin, setIsLogin] = useState(true);
+  const [authLoading, setAuthLoading] = useState(false);
+
   const [tab, setTab] = useState("dash");
   const [sessions, setSessions] = useState([]);
   const [baseCapital, setBaseCapital] = useState({ poker: 50, sports: 500 });
@@ -80,16 +90,50 @@ export default function App() {
   const active = sessions.filter(x => !x.archived);
   const todayStr = new Date().toLocaleDateString("es-MX", { day: "2-digit", month: "short" });
 
+  // --- CONTROL DE SESIÓN ---
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setAuthLoading(true);
+    try {
+      if (isLogin) {
+        const { error } = await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword });
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.auth.signUp({ email: authEmail, password: authPassword });
+        if (error) throw error;
+        alert("Cuenta creada. Ya puedes iniciar sesión.");
+      }
+    } catch (error) {
+      alert(error.message);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setSessions([]);
+    setLoaded(false);
+  };
+
   // --- MOTOR DE NOTIFICACIONES ---
   const sendAlert = async (title, body) => {
     if ('serviceWorker' in navigator && Notification.permission === 'granted') {
       try {
         const reg = await navigator.serviceWorker.ready;
-        reg.showNotification(title, {
-          body: body,
-          icon: '/icon.png',
-          vibrate: [200, 100, 200]
-        });
+        reg.showNotification(title, { body: body, icon: '/icon.png', vibrate: [200, 100, 200] });
       } catch (e) {
         console.log("Error mostrando notificación iOS:", e);
       }
@@ -113,7 +157,7 @@ export default function App() {
 
   // --- SISTEMA DE ALERTAS BASADAS EN TIEMPO ---
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || !session) return;
 
     const checkTimeAlerts = () => {
       const now = new Date();
@@ -122,25 +166,20 @@ export default function App() {
       const today = now.toLocaleDateString("es-MX");
 
       let notifiedToday = {};
-      try {
-        notifiedToday = JSON.parse(localStorage.getItem(`bk_alerts_${today}`)) || {};
-      } catch (e) {}
+      try { notifiedToday = JSON.parse(localStorage.getItem(`bk_alerts_${today}`)) || {}; } catch (e) {}
 
       if (hours === 10 && minutes === 0 && !notifiedToday.morning) {
         sendAlert("🌅 ¡Buenos días!", "No olvides tu Omega-3 y tu primer litro de agua antes de la primera sesión.");
         notifiedToday.morning = true;
       }
-
       if (hours === 14 && minutes === 0 && !notifiedToday.afternoon) {
         sendAlert("🧠 Check-in", "¿Cómo va el tilt hoy? Si vas a jugar, asegúrate de estar calmado.");
         notifiedToday.afternoon = true;
       }
-
       if (hours === 20 && minutes === 0 && !notifiedToday.evening) {
         sendAlert("📖 Hora de estudio", "Revisa tus Spots y Leaks antes de cerrar el día.");
         notifiedToday.evening = true;
       }
-
       if (hours === 22 && minutes === 0 && !notifiedToday.night) {
         const todaySessions = active.filter(s => s.date === todayStr && s.type !== "leak");
         if (todaySessions.length > 0) {
@@ -150,31 +189,28 @@ export default function App() {
                 if (s.type === 'sports') sportsTotal += s.amount;
                 else pokerTotal += s.amount;
             });
-            sendAlert("📊 Resumen del Día", `Poker: ${sgn(pokerTotal)}${fmt(pokerTotal)} USD | Deportivas: ${sgn(sportsTotal)}${fmt(sportsTotal, 0)} MXN. ¡A descansar!`);
+            sendAlert("📊 Resumen del Día", `Poker: ${sgn(pokerTotal)}${fmt(pokerTotal)} USD | Deportivas: ${sgn(sportsTotal)}${fmt(sportsTotal, 0)} MXN.`);
         }
         notifiedToday.night = true;
       }
-
       localStorage.setItem(`bk_alerts_${today}`, JSON.stringify(notifiedToday));
     };
 
     const intervalId = setInterval(checkTimeAlerts, 60000);
     checkTimeAlerts();
-
     return () => clearInterval(intervalId);
-  }, [loaded, active, todayStr]);
+  }, [loaded, active, todayStr, session]);
 
   // --- NUBE: CARGAR DATOS Y RESET DIARIO ---
   const load = useCallback(async () => {
+    if (!session) return;
     try {
-      if ('Notification' in window) {
-        setPushStatus(Notification.permission === 'granted' ? 'Activas' : 'Permiso Denegado');
-      }
+      if ('Notification' in window) setPushStatus(Notification.permission === 'granted' ? 'Activas' : 'Permiso Denegado');
 
+      // Extraer Capital Inicial de la NUBE (User Metadata)
       let currentBase = { poker: 50, sports: 500 };
-      const savedCapital = localStorage.getItem("bk_base_capital");
-      if (savedCapital) {
-        currentBase = JSON.parse(savedCapital);
+      if (session.user.user_metadata?.base_capital) {
+        currentBase = session.user.user_metadata.base_capital;
         setBaseCapital(currentBase);
       }
 
@@ -182,20 +218,19 @@ export default function App() {
       const lastDate = localStorage.getItem("bk_last_date");
       
       if (lastDate && lastDate !== today) {
-        await supabase.from('daily_habits').delete().neq('id', 'dummy');
+        await supabase.from('daily_habits').delete().eq('user_id', session.user.id).neq('id', 'dummy');
       }
       localStorage.setItem("bk_last_date", today);
 
       const hasOpenedToday = localStorage.getItem("bk_opened_today");
       if (hasOpenedToday !== today) {
-        setTimeout(() => {
-          sendAlert("🌅 Diego's Bankroll", "Nuevo día. Registra tus check-ins de Meditación y Omega-3 antes de jugar.");
-        }, 3000);
+        setTimeout(() => sendAlert("🌅 Diego's Bankroll", "Nuevo día. Registra tus check-ins antes de jugar."), 3000);
         localStorage.setItem("bk_opened_today", today);
       }
 
-      const { data: sData } = await supabase.from('sessions').select('*').order('id', { ascending: false });
-      const { data: hData } = await supabase.from('daily_habits').select('*');
+      // Fetch filtrado por USUARIO
+      const { data: sData } = await supabase.from('sessions').select('*').eq('user_id', session.user.id).order('id', { ascending: false });
+      const { data: hData } = await supabase.from('daily_habits').select('*').eq('user_id', session.user.id);
 
       if (sData) {
         setSessions(sData);
@@ -214,11 +249,8 @@ export default function App() {
         const loadedHabits = { meditar: false, agua: false, omega: false, ejercicio: false };
         const loadedTilt = {};
         hData.forEach(item => {
-          if (item.id.startsWith('tilt_')) {
-            loadedTilt[item.id.replace('tilt_', '')] = item.status;
-          } else {
-            loadedHabits[item.id] = item.status;
-          }
+          if (item.id.startsWith('tilt_')) loadedTilt[item.id.replace('tilt_', '')] = item.status;
+          else loadedHabits[item.id] = item.status;
         });
         setHabits(loadedHabits);
         setTilt(loadedTilt);
@@ -227,15 +259,16 @@ export default function App() {
       console.error("Error cargando desde Supabase:", error);
     }
     setLoaded(true);
-  }, []);
+  }, [session]);
 
   useEffect(() => { load(); }, [load]);
 
-  const saveBaseCapital = () => {
-    localStorage.setItem("bk_base_capital", JSON.stringify(baseCapital));
+  const saveBaseCapital = async () => {
+    // Guardar Capital Inicial en la NUBE
+    await supabase.auth.updateUser({ data: { base_capital: baseCapital } });
     load();
     if ('serviceWorker' in navigator && Notification.permission === 'granted') {
-      sendAlert("⚙️ Configuración", "Capital inicial actualizado con éxito.");
+      sendAlert("⚙️ Configuración", "Capital inicial actualizado en la nube con éxito.");
     }
   };
 
@@ -247,6 +280,7 @@ export default function App() {
     
     const s = {
       id: Date.now(), 
+      user_id: session.user.id, // VINCULADO AL USUARIO
       type: form.type, 
       amount: value, 
       note: form.note,
@@ -267,16 +301,11 @@ export default function App() {
       setTab("dash");
 
       if (form.type === "cash") {
-        if (value <= -6) {
-          sendAlert("⚠️ STOP LOSS ALCANZADO", "Has perdido 3 buy-ins. Cierra la mesa inmediatamente y respira.");
-        } else if (value >= 10) {
-          sendAlert("🏆 Buena Sesión", "Excelente win rate. Protege las ganancias y no forces la jugada.");
-        }
+        if (value <= -6) sendAlert("⚠️ STOP LOSS ALCANZADO", "Has perdido 3 buy-ins. Cierra la mesa inmediatamente y respira.");
+        else if (value >= 10) sendAlert("🏆 Buena Sesión", "Excelente win rate. Protege las ganancias.");
       }
-      if (form.type === "sports") {
-        if (value <= -(baseCapital.sports * 0.1)) { // Alerta si pierde el 10% del bankroll de golpe
-          sendAlert("⚽ Cuidado con el Riesgo", "Pérdida fuerte. Recuerda: No apuestes en vivo para recuperar.");
-        }
+      if (form.type === "sports" && value <= -(baseCapital.sports * 0.1)) {
+          sendAlert("⚽ Cuidado con el Riesgo", "Pérdida fuerte. No apuestes en vivo para recuperar.");
       }
     } else {
       alert("Error al guardar en la nube.");
@@ -289,6 +318,7 @@ export default function App() {
     
     const s = {
       id: Date.now(),
+      user_id: session.user.id, // VINCULADO AL USUARIO
       type: "leak",
       amount: 0,
       note: leakForm.note,
@@ -313,21 +343,52 @@ export default function App() {
   const toggleHabit = async (k) => {
     const nextVal = !habits[k];
     setHabits({ ...habits, [k]: nextVal });
-    await supabase.from('daily_habits').upsert({ id: k, status: nextVal });
+    await supabase.from('daily_habits').upsert({ id: k, user_id: session.user.id, status: nextVal });
   };
 
   // --- NUBE: TOGGLE TILT ---
   const toggleTilt = async (k) => {
     const nextVal = !tilt[k];
     setTilt({ ...tilt, [k]: nextVal });
-    await supabase.from('daily_habits').upsert({ id: `tilt_${k}`, status: nextVal });
+    await supabase.from('daily_habits').upsert({ id: `tilt_${k}`, user_id: session.user.id, status: nextVal });
   };
+
+  // --- UI: LOGIN ---
+  if (!session) {
+    return (
+      <div style={{ background: C.bg, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "Georgia, serif" }}>
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 16, padding: 30, width: "100%", maxWidth: 360 }}>
+          <div style={{ textAlign: "center", marginBottom: 30 }}>
+            <div style={{ fontSize: 10, letterSpacing: 4, color: C.blue, textTransform: "uppercase", marginBottom: 8 }}>Identificación requerida</div>
+            <div style={{ fontSize: 24, fontWeight: "bold", color: C.text }}>Diego's Edge ♠</div>
+          </div>
+          
+          <form onSubmit={handleAuth}>
+            <input type="email" placeholder="Correo electrónico" value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} required
+              style={{ width: "100%", padding: "14px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.card, color: C.text, fontSize: 14, marginBottom: 12, boxSizing: "border-box", outline: "none", fontFamily: "inherit" }} />
+            
+            <input type="password" placeholder="Contraseña" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} required
+              style={{ width: "100%", padding: "14px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.card, color: C.text, fontSize: 14, marginBottom: 20, boxSizing: "border-box", outline: "none", fontFamily: "inherit" }} />
+            
+            <button type="submit" disabled={authLoading}
+              style={{ width: "100%", padding: "14px", borderRadius: 8, border: "none", background: C.blueD, color: C.blue, fontSize: 14, fontWeight: "bold", cursor: "pointer", textTransform: "uppercase", letterSpacing: 1 }}>
+              {authLoading ? "Cargando..." : (isLogin ? "Acceder al Sistema" : "Crear Cuenta")}
+            </button>
+          </form>
+
+          <div style={{ textAlign: "center", marginTop: 20 }}>
+            <button onClick={() => setIsLogin(!isLogin)} style={{ background: "none", border: "none", color: C.muted, fontSize: 12, cursor: "pointer", textDecoration: "underline" }}>
+              {isLogin ? "¿Nuevo jugador? Crea tu cuenta" : "Ya tengo cuenta"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const tiltScore = TILT_QS.filter(q => tilt[q.id]).length;
   const tiltColor = tiltScore >= 4 ? C.green : tiltScore >= 2 ? C.gold : C.red;
   const tiltLabel = tiltScore >= 4 ? "✓ Óptimo" : tiltScore >= 2 ? "⚠ Cuidado" : "✗ No juegues";
-
-  const archived = sessions.filter(x => x.archived);
   
   const pokerSessions = active.filter(x => x.type !== "sports" && x.type !== "leak");
   const sportsSessions = active.filter(x => x.type === "sports");
@@ -405,9 +466,14 @@ export default function App() {
       )}
 
       {/* Header */}
-      <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "18px 20px 12px" }}>
-        <div style={{ fontSize: 10, letterSpacing: 4, color: C.muted, textTransform: "uppercase", marginBottom: 2 }}>Sistema de Gestión</div>
-        <div style={{ fontSize: 22, fontWeight: "bold", color: C.text }}>Diego's Edge ♠</div>
+      <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "18px 20px 12px", display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
+        <div>
+          <div style={{ fontSize: 10, letterSpacing: 4, color: C.muted, textTransform: "uppercase", marginBottom: 2 }}>Sistema de Gestión</div>
+          <div style={{ fontSize: 22, fontWeight: "bold", color: C.text }}>Diego's Edge ♠</div>
+        </div>
+        <div style={{ fontSize: 10, color: C.muted }}>
+          User: {session.user.email.split('@')[0]}
+        </div>
       </div>
 
       {(danger || warning) && (
@@ -639,7 +705,7 @@ export default function App() {
                 </div>
               </div>
               <button onClick={saveBaseCapital} style={{ width: "100%", padding: "12px", borderRadius: 8, border: "none", background: C.blueD + "33", color: C.blue, fontSize: 12, cursor: "pointer", fontFamily: "Georgia, serif", fontWeight: "bold", letterSpacing: 1 }}>
-                GUARDAR CAPITAL
+                GUARDAR CAPITAL EN NUBE
               </button>
             </div>
 
@@ -675,6 +741,10 @@ export default function App() {
                 </button>
               )}
 
+              <button onClick={handleLogout} style={{ width: "100%", padding: 12, marginBottom: 16, borderRadius: 10, background: "transparent", border: `1px solid ${C.muted}`, color: C.textDim, fontSize: 11, cursor: "pointer", fontFamily: "Georgia", letterSpacing: 1 }}>
+                CERRAR SESIÓN
+              </button>
+
               <button onClick={async () => {
                 if (!confirm("¿Archivar todos los datos en la nube y empezar desde cero?")) return;
                 
@@ -682,7 +752,7 @@ export default function App() {
                 if(activeIds.length > 0) {
                   await supabase.from('sessions').update({ archived: true }).in('id', activeIds);
                 }
-                await supabase.from('daily_habits').delete().neq('id', 'dummy');
+                await supabase.from('daily_habits').delete().eq('user_id', session.user.id).neq('id', 'dummy');
 
                 const next = sessions.map(s => ({ ...s, archived: true }));
                 setSessions(next);
@@ -692,7 +762,7 @@ export default function App() {
                 setTilt({});
                 setTab("dash");
               }} style={{ width: "100%", padding: 12, borderRadius: 10, background: "transparent", border: `1px solid ${C.redD}`, color: "#aa3333", fontSize: 10, cursor: "pointer", fontFamily: "Georgia", letterSpacing: 2 }}>
-                ARCHIVAR Y RESETEAR EN LA NUBE
+                ARCHIVAR Y RESETEAR MI CUENTA
               </button>
             </div>
           </div>
@@ -707,7 +777,7 @@ export default function App() {
             { k: "reg", icon: "+", l: "Sesión" },
             { k: "leaks", icon: "⚑", l: "Leaks" },
             { k: "hist", icon: "≡", l: "Historial" },
-            { k: "rules", icon: "◉", l: "Reglas" },
+            { k: "rules", icon: "◉", l: "Config" },
           ].map(t => (
             <button key={t.k} onClick={() => setTab(t.k)} style={{ flex: 1, padding: "13px 4px 9px", border: "none", background: "transparent", cursor: "pointer", color: tab === t.k ? C.blue : C.muted, fontFamily: "Georgia, serif" }}>
               <div style={{ fontSize: 15 }}>{t.icon}</div>
