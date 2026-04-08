@@ -406,14 +406,6 @@ export default function App() {
                 </button>
               ))}
             </div>
-
-            {/* BOTÓN DE PERMISOS PWA iOS */}
-            {pushStatus !== "Activas" && (
-              <button onClick={requestNotificationPermission} 
-                style={{ width: "100%", padding: "12px", marginTop: "16px", borderRadius: 8, border: `1px solid ${C.blue}`, background: C.blueD + "33", color: C.blue, fontSize: "11px", cursor: "pointer", fontFamily: "Georgia", textTransform: "uppercase", fontWeight: "bold", letterSpacing: 1 }}>
-                🔔 Activar Alertas Nativas (Estado: {pushStatus})
-              </button>
-            )}
           </div>
 
           {/* Poker ladder */}
@@ -571,6 +563,15 @@ export default function App() {
             ))}
 
             <div style={{ marginTop: 24, borderTop: `1px solid ${C.border}`, paddingTop: 16 }}>
+              
+              {/* BOTÓN DE PERMISOS MOVIDO AQUÍ */}
+              {pushStatus !== "Activas" && (
+                <button onClick={requestNotificationPermission} 
+                  style={{ width: "100%", padding: "12px", marginBottom: "16px", borderRadius: 10, border: `1px solid ${C.blue}`, background: C.blueD + "33", color: C.blue, fontSize: "11px", cursor: "pointer", fontFamily: "Georgia", textTransform: "uppercase", fontWeight: "bold", letterSpacing: 1 }}>
+                  🔔 Activar Alertas Nativas (Estado: {pushStatus})
+                </button>
+              )}
+
               <button onClick={async () => {
                 if (!confirm("¿Archivar todos los datos en la nube y empezar desde cero?")) return;
                 
