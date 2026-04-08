@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { supabase } from "./supabase";
 
 const RULES = {
@@ -49,9 +49,6 @@ const TILT_QS = [
 
 const POSITIONS = ["UTG", "MP", "HJ", "CO", "BTN", "SB", "BB", "General"];
 
-const INIT_POKER = 50;
-const INIT_SPORTS = 500;
-
 const C = {
   bg: "#07070f", surface: "#0d0d1c", card: "#111122",
   border: "#1c1c35", green: "#4ade80", greenD: "#14532d",
@@ -65,8 +62,9 @@ const sgn = (n) => (n >= 0 ? "+" : "");
 export default function App() {
   const [tab, setTab] = useState("dash");
   const [sessions, setSessions] = useState([]);
-  const [poker, setPoker] = useState(INIT_POKER);
-  const [sports, setSports] = useState(INIT_SPORTS);
+  const [baseCapital, setBaseCapital] = useState({ poker: 50, sports: 500 });
+  const [poker, setPoker] = useState(50);
+  const [sports, setSports] = useState(500);
   const [habits, setHabits] = useState({ meditar: false, agua: false, omega: false, ejercicio: false });
   const [tilt, setTilt] = useState({});
   
@@ -123,32 +121,27 @@ export default function App() {
       const minutes = now.getMinutes();
       const today = now.toLocaleDateString("es-MX");
 
-      // Objeto para llevar el registro de las notificaciones enviadas hoy
       let notifiedToday = {};
       try {
         notifiedToday = JSON.parse(localStorage.getItem(`bk_alerts_${today}`)) || {};
       } catch (e) {}
 
-      // 10:00 AM - Check-in Matutino
       if (hours === 10 && minutes === 0 && !notifiedToday.morning) {
         sendAlert("🌅 ¡Buenos días!", "No olvides tu Omega-3 y tu primer litro de agua antes de la primera sesión.");
         notifiedToday.morning = true;
       }
 
-      // 2:00 PM - Revisión de Estado Mental
       if (hours === 14 && minutes === 0 && !notifiedToday.afternoon) {
         sendAlert("🧠 Check-in", "¿Cómo va el tilt hoy? Si vas a jugar, asegúrate de estar calmado.");
         notifiedToday.afternoon = true;
       }
 
-      // 8:00 PM - Recordatorio de Estudio
       if (hours === 20 && minutes === 0 && !notifiedToday.evening) {
         sendAlert("📖 Hora de estudio", "Revisa tus Spots y Leaks antes de cerrar el día.");
         notifiedToday.evening = true;
       }
 
-      // 10:00 PM - Resumen del Día
-      if (hours === 22 && minutes === 48 && !notifiedToday.night) {
+      if (hours === 22 && minutes === 0 && !notifiedToday.night) {
         const todaySessions = active.filter(s => s.date === todayStr && s.type !== "leak");
         if (todaySessions.length > 0) {
             let pokerTotal = 0;
@@ -165,9 +158,7 @@ export default function App() {
       localStorage.setItem(`bk_alerts_${today}`, JSON.stringify(notifiedToday));
     };
 
-    // Checa la hora cada minuto
     const intervalId = setInterval(checkTimeAlerts, 60000);
-    // Ejecuta una vez al inicio por si acaba de dar la hora
     checkTimeAlerts();
 
     return () => clearInterval(intervalId);
@@ -180,6 +171,13 @@ export default function App() {
         setPushStatus(Notification.permission === 'granted' ? 'Activas' : 'Permiso Denegado');
       }
 
+      let currentBase = { poker: 50, sports: 500 };
+      const savedCapital = localStorage.getItem("bk_base_capital");
+      if (savedCapital) {
+        currentBase = JSON.parse(savedCapital);
+        setBaseCapital(currentBase);
+      }
+
       const today = new Date().toLocaleDateString("es-MX");
       const lastDate = localStorage.getItem("bk_last_date");
       
@@ -187,6 +185,14 @@ export default function App() {
         await supabase.from('daily_habits').delete().neq('id', 'dummy');
       }
       localStorage.setItem("bk_last_date", today);
+
+      const hasOpenedToday = localStorage.getItem("bk_opened_today");
+      if (hasOpenedToday !== today) {
+        setTimeout(() => {
+          sendAlert("🌅 Diego's Bankroll", "Nuevo día. Registra tus check-ins de Meditación y Omega-3 antes de jugar.");
+        }, 3000);
+        localStorage.setItem("bk_opened_today", today);
+      }
 
       const { data: sData } = await supabase.from('sessions').select('*').order('id', { ascending: false });
       const { data: hData } = await supabase.from('daily_habits').select('*');
@@ -197,8 +203,11 @@ export default function App() {
         const pokerSessionsData = activeData.filter(x => x.type !== "sports" && x.type !== "leak");
         const sportsSessionsData = activeData.filter(x => x.type === "sports");
         
-        setPoker(pokerSessionsData.reduce((a, x) => a + x.amount, INIT_POKER));
-        setSports(sportsSessionsData.reduce((a, x) => a + x.amount, INIT_SPORTS));
+        setPoker(pokerSessionsData.reduce((a, x) => a + x.amount, currentBase.poker));
+        setSports(sportsSessionsData.reduce((a, x) => a + x.amount, currentBase.sports));
+      } else {
+        setPoker(currentBase.poker);
+        setSports(currentBase.sports);
       }
 
       if (hData) {
@@ -221,6 +230,14 @@ export default function App() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  const saveBaseCapital = () => {
+    localStorage.setItem("bk_base_capital", JSON.stringify(baseCapital));
+    load();
+    if ('serviceWorker' in navigator && Notification.permission === 'granted') {
+      sendAlert("⚙️ Configuración", "Capital inicial actualizado con éxito.");
+    }
+  };
 
   // --- NUBE: GUARDAR SESIÓN NORMAL ---
   const addSession = async () => {
@@ -249,12 +266,16 @@ export default function App() {
       setTimeout(() => setFlash(null), 1000);
       setTab("dash");
 
-      // ALGORITMO DE ALERTAS INTELIGENTES (TILT Y RECOMPENSA)
       if (form.type === "cash") {
         if (value <= -6) {
           sendAlert("⚠️ STOP LOSS ALCANZADO", "Has perdido 3 buy-ins. Cierra la mesa inmediatamente y respira.");
         } else if (value >= 10) {
           sendAlert("🏆 Buena Sesión", "Excelente win rate. Protege las ganancias y no forces la jugada.");
+        }
+      }
+      if (form.type === "sports") {
+        if (value <= -(baseCapital.sports * 0.1)) { // Alerta si pierde el 10% del bankroll de golpe
+          sendAlert("⚽ Cuidado con el Riesgo", "Pérdida fuerte. Recuerda: No apuestes en vivo para recuperar.");
         }
       }
     } else {
@@ -313,13 +334,13 @@ export default function App() {
   const leakSessions = active.filter(x => x.type === "leak");
   
   const pokerWins = pokerSessions.filter(x => x.amount > 0).length;
-  const pokerProfit = parseFloat((poker - INIT_POKER).toFixed(2));
-  const sportsProfit = parseFloat((sports - INIT_SPORTS).toFixed(2));
+  const pokerProfit = parseFloat((poker - baseCapital.poker).toFixed(2));
+  const sportsProfit = parseFloat((sports - baseCapital.sports).toFixed(2));
 
   // --- GRÁFICA POKER ---
   const sparkPoints = (() => {
-    const pts = [INIT_POKER];
-    let cur = INIT_POKER;
+    const pts = [baseCapital.poker];
+    let cur = baseCapital.poker;
     [...pokerSessions].reverse().forEach(s => { cur = parseFloat((cur + s.amount).toFixed(2)); pts.push(cur); });
     if (pts.length < 2) return null;
     const W = 120, H = 32;
@@ -330,8 +351,8 @@ export default function App() {
 
   // --- GRÁFICA DEPORTIVAS ---
   const sparkSports = (() => {
-    const pts = [INIT_SPORTS];
-    let cur = INIT_SPORTS;
+    const pts = [baseCapital.sports];
+    let cur = baseCapital.sports;
     [...sportsSessions].reverse().forEach(s => { cur = parseFloat((cur + s.amount).toFixed(2)); pts.push(cur); });
     if (pts.length < 2) return null;
     const W = 120, H = 32;
@@ -346,8 +367,8 @@ export default function App() {
     return s;
   })();
 
-  const danger = poker < 30;
-  const warning = poker < 40 && poker >= 30;
+  const danger = poker < (baseCapital.poker * 0.6);
+  const warning = poker < (baseCapital.poker * 0.8) && poker >= (baseCapital.poker * 0.6);
 
   const pill = (on, color) => ({
     padding: "7px 13px", borderRadius: 20,
@@ -406,7 +427,7 @@ export default function App() {
               <div style={{ fontSize: 9, letterSpacing: 3, color: C.muted, textTransform: "uppercase", marginBottom: 6 }}>Poker USD</div>
               <div style={{ fontSize: 26, fontWeight: "bold", color: pokerProfit >= 0 ? C.green : C.red }}>${fmt(poker)}</div>
               <div style={{ fontSize: 11, color: pokerProfit >= 0 ? C.green : C.red, marginTop: 3 }}>
-                {sgn(pokerProfit)}{fmt(pokerProfit)} · {sgn(pokerProfit)}{fmt(((pokerProfit / INIT_POKER) * 100), 1)}%
+                {sgn(pokerProfit)}{fmt(pokerProfit)} · {sgn(pokerProfit)}{fmt(((pokerProfit / baseCapital.poker) * 100), 1)}%
               </div>
               {sparkPoints && (
                 <svg viewBox="0 0 120 32" style={{ width: "100%", height: 24, marginTop: 8, display: "block" }}>
@@ -419,7 +440,7 @@ export default function App() {
               <div style={{ fontSize: 9, letterSpacing: 3, color: C.muted, textTransform: "uppercase", marginBottom: 6 }}>Deportivas MXN</div>
               <div style={{ fontSize: 26, fontWeight: "bold", color: sportsProfit >= 0 ? C.blue : C.red }}>${fmt(sports, 0)}</div>
               <div style={{ fontSize: 11, color: sportsProfit >= 0 ? C.blue : C.red, marginTop: 3 }}>
-                {sgn(sportsProfit)}{fmt(sportsProfit, 0)} · {sgn(sportsProfit)}{fmt(((sportsProfit / INIT_SPORTS) * 100), 1)}%
+                {sgn(sportsProfit)}{fmt(sportsProfit, 0)} · {sgn(sportsProfit)}{fmt(((sportsProfit / baseCapital.sports) * 100), 1)}%
               </div>
               {sparkSports && (
                 <svg viewBox="0 0 120 32" style={{ width: "100%", height: 24, marginTop: 8, display: "block" }}>
@@ -598,9 +619,30 @@ export default function App() {
           </div>
         )}
 
-        {/* ── REGLAS ── */}
+        {/* ── REGLAS & CONFIG ── */}
         {tab === "rules" && (
           <div>
+            {/* CONFIGURACIÓN DE CAPITAL INICIAL */}
+            <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }}>
+              <div style={{ fontSize: 9, letterSpacing: 3, color: C.muted, textTransform: "uppercase", marginBottom: 14 }}>⚙️ Configurar Capital Inicial</div>
+              
+              <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>Poker (USD)</div>
+                  <input type="number" min="0" value={baseCapital.poker} onChange={e => setBaseCapital({...baseCapital, poker: Number(e.target.value)})}
+                    style={{ width: "100%", padding: "10px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.surface, color: C.text, fontSize: 14, fontFamily: "Georgia, serif", outline: "none", boxSizing: "border-box" }} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>Deportivas (MXN)</div>
+                  <input type="number" min="0" value={baseCapital.sports} onChange={e => setBaseCapital({...baseCapital, sports: Number(e.target.value)})}
+                    style={{ width: "100%", padding: "10px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.surface, color: C.text, fontSize: 14, fontFamily: "Georgia, serif", outline: "none", boxSizing: "border-box" }} />
+                </div>
+              </div>
+              <button onClick={saveBaseCapital} style={{ width: "100%", padding: "12px", borderRadius: 8, border: "none", background: C.blueD + "33", color: C.blue, fontSize: 12, cursor: "pointer", fontFamily: "Georgia, serif", fontWeight: "bold", letterSpacing: 1 }}>
+                GUARDAR CAPITAL
+              </button>
+            </div>
+
             {[
               { k: "cash", l: "Cash NL2", c: C.green },
               { k: "tournament", l: "Torneos", c: C.blue },
@@ -626,7 +668,6 @@ export default function App() {
 
             <div style={{ marginTop: 24, borderTop: `1px solid ${C.border}`, paddingTop: 16 }}>
               
-              {/* BOTÓN DE PERMISOS MOVIDO AQUÍ */}
               {pushStatus !== "Activas" && (
                 <button onClick={requestNotificationPermission} 
                   style={{ width: "100%", padding: "12px", marginBottom: "16px", borderRadius: 10, border: `1px solid ${C.blue}`, background: C.blueD + "33", color: C.blue, fontSize: "11px", cursor: "pointer", fontFamily: "Georgia", textTransform: "uppercase", fontWeight: "bold", letterSpacing: 1 }}>
@@ -645,8 +686,8 @@ export default function App() {
 
                 const next = sessions.map(s => ({ ...s, archived: true }));
                 setSessions(next);
-                setPoker(INIT_POKER);
-                setSports(INIT_SPORTS);
+                setPoker(baseCapital.poker);
+                setSports(baseCapital.sports);
                 setHabits({ meditar: false, agua: false, omega: false, ejercicio: false });
                 setTilt({});
                 setTab("dash");
