@@ -77,16 +77,19 @@ export default function App() {
   const [loaded, setLoaded] = useState(false);
   const [flash, setFlash] = useState(null);
   const [showArchived, setShowArchived] = useState(false);
+  const [pushStatus, setPushStatus] = useState("Checking...");
 
   // --- NUBE: CARGAR DATOS Y RESET DIARIO ---
   const load = useCallback(async () => {
     try {
-      // Algoritmo de Reset Diario
+      if ('Notification' in window) {
+        setPushStatus(Notification.permission === 'granted' ? 'Activas' : 'Permiso Denegado');
+      }
+
       const today = new Date().toLocaleDateString("es-MX");
       const lastDate = localStorage.getItem("bk_last_date");
       
       if (lastDate && lastDate !== today) {
-        // Es un día nuevo: Borramos hábitos de la nube
         await supabase.from('daily_habits').delete().neq('id', 'dummy');
       }
       localStorage.setItem("bk_last_date", today);
@@ -97,7 +100,6 @@ export default function App() {
       if (sData) {
         setSessions(sData);
         const active = sData.filter(x => !x.archived);
-        // Filtramos para que los "leaks" no afecten el bankroll
         const pokerSessionsData = active.filter(x => x.type !== "sports" && x.type !== "leak");
         const sportsSessionsData = active.filter(x => x.type === "sports");
         
@@ -126,6 +128,37 @@ export default function App() {
 
   useEffect(() => { load(); }, [load]);
 
+  // --- MOTOR DE NOTIFICACIONES ---
+  const sendAlert = async (title, body) => {
+    if ('serviceWorker' in navigator && Notification.permission === 'granted') {
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        reg.showNotification(title, {
+          body: body,
+          icon: '/icon.png',
+          vibrate: [200, 100, 200]
+        });
+      } catch (e) {
+        console.log("Error mostrando notificación iOS:", e);
+      }
+    }
+  };
+
+  const requestNotificationPermission = async () => {
+    if (!('Notification' in window)) {
+      alert("Tu navegador no soporta notificaciones.");
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    if (permission === 'granted') {
+      setPushStatus("Activas");
+      sendAlert("♠️ Diego's Edge", "Notificaciones configuradas a nivel sistema. Listo para grindear.");
+    } else {
+      setPushStatus("Denegado");
+      alert("Permiso denegado por iOS.");
+    }
+  };
+
   // --- NUBE: GUARDAR SESIÓN NORMAL ---
   const addSession = async () => {
     const amt = parseFloat(form.amount);
@@ -152,6 +185,15 @@ export default function App() {
       setFlash(value > 0 ? "win" : "loss");
       setTimeout(() => setFlash(null), 1000);
       setTab("dash");
+
+      // ALGORITMO DE ALERTAS INTELIGENTES (TILT Y RECOMPENSA)
+      if (form.type === "cash") {
+        if (value <= -6) {
+          sendAlert("⚠️ STOP LOSS ALCANZADO", "Has perdido 3 buy-ins. Cierra la mesa inmediatamente y respira.");
+        } else if (value >= 10) {
+          sendAlert("🏆 Buena Sesión", "Excelente win rate. Protege las ganancias y no forces la jugada.");
+        }
+      }
     } else {
       alert("Error al guardar en la nube.");
     }
@@ -164,9 +206,9 @@ export default function App() {
     const s = {
       id: Date.now(),
       type: "leak",
-      amount: 0, // Los leaks no afectan el dinero
+      amount: 0,
       note: leakForm.note,
-      buyin: leakForm.position, // Usamos buyin para guardar la posición (UTG, etc.)
+      buyin: leakForm.position,
       date: new Date().toLocaleDateString("es-MX", { day: "2-digit", month: "short" }),
       archived: false,
     };
@@ -340,7 +382,7 @@ export default function App() {
             ))}
           </div>
 
-          {/* Tilt + Habits (Siempre visible y auto-reseteable) */}
+          {/* Tilt + Habits */}
           <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: 14, marginBottom: 12 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
               <div style={{ fontSize: 9, letterSpacing: 3, color: C.muted, textTransform: "uppercase" }}>Hábitos de Hoy</div>
@@ -364,29 +406,16 @@ export default function App() {
                 </button>
               ))}
             </div>
+
+            {/* BOTÓN DE PERMISOS PWA iOS */}
+            {pushStatus !== "Activas" && (
+              <button onClick={requestNotificationPermission} 
+                style={{ width: "100%", padding: "12px", marginTop: "16px", borderRadius: 8, border: `1px solid ${C.blue}`, background: C.blueD + "33", color: C.blue, fontSize: "11px", cursor: "pointer", fontFamily: "Georgia", textTransform: "uppercase", fontWeight: "bold", letterSpacing: 1 }}>
+                🔔 Activar Alertas Nativas (Estado: {pushStatus})
+              </button>
+            )}
           </div>
 
-{/* --- PEGA ESTO AQUÍ: BOTÓN TEMPORAL DE NOTIFICACIONES --- */}
-            <button 
-              onClick={async () => {
-                if (!('Notification' in window)) {
-                  alert("Tu navegador no soporta notificaciones.");
-                  return;
-                }
-                const permission = await Notification.requestPermission();
-                if (permission === 'granted') {
-                  new Notification("♠️ Diego's Edge", {
-                    body: "¡Permisos de sistema activados con éxito!"
-                  });
-                } else {
-                  alert("Permiso denegado por el sistema operativo.");
-                }
-              }} 
-              style={{ width: "100%", padding: "12px", marginTop: "16px", borderRadius: 8, border: "1px solid #60a5fa", background: "#0d1b2a", color: "#60a5fa", fontSize: "11px", cursor: "pointer", fontFamily: "Georgia", textTransform: "uppercase", fontWeight: "bold", letterSpacing: 1 }}>
-              🔔 Activar Notificaciones Nativas
-            </button>
-            {/* --- FIN DEL BOTÓN --- */}
-            
           {/* Poker ladder */}
           <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: 14, marginBottom: 12 }}>
             <div style={{ fontSize: 9, letterSpacing: 3, color: C.muted, textTransform: "uppercase", marginBottom: 10 }}>Escalera Poker</div>
@@ -439,7 +468,7 @@ export default function App() {
           </div>
         )}
 
-        {/* ── SPOTS & LEAKS (NUEVO) ── */}
+        {/* ── SPOTS & LEAKS ── */}
         {tab === "leaks" && (
           <div>
             <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }}>
@@ -466,7 +495,6 @@ export default function App() {
               </button>
             </div>
 
-            {/* Lista de Leaks */}
             <div style={{ background: C.surface, borderRadius: 14, padding: "0 10px" }}>
               <div style={{ fontSize: 9, letterSpacing: 3, color: C.muted, textTransform: "uppercase", padding: "14px 6px" }}>Áreas de Mejora ({leakSessions.length})</div>
               {leakSessions.map(s => (
