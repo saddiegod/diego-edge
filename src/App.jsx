@@ -3,7 +3,7 @@ import { supabase } from "./supabase";
 
 const RULES = {
   cash: [
-    "Stop-loss por sesión: máximo 3 buyins ($6 USD)",
+    "Stop-loss por sesión: máximo 4 buyins ($8 USD)",
     "Si el bankroll baja a $30, paras la semana",
     "Si el bankroll baja a $25, dejas de jugar hasta recargar",
     "Máximo 2 horas por sesión en un solo bloque",
