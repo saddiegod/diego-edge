@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "./supabase";
 
 const RULES = {
   cash: [
-    "Stop-loss por sesión: máximo 4 buyins ($8 USD)",
+    "Stop-loss por sesión: máximo 3 buyins ($6 USD)",
     "Si el bankroll baja a $30, paras la semana",
     "Si el bankroll baja a $25, dejas de jugar hasta recargar",
     "Máximo 2 horas por sesión en un solo bloque",
@@ -79,54 +79,8 @@ export default function App() {
   const [showArchived, setShowArchived] = useState(false);
   const [pushStatus, setPushStatus] = useState("Checking...");
 
-  // --- NUBE: CARGAR DATOS Y RESET DIARIO ---
-  const load = useCallback(async () => {
-    try {
-      if ('Notification' in window) {
-        setPushStatus(Notification.permission === 'granted' ? 'Activas' : 'Permiso Denegado');
-      }
-
-      const today = new Date().toLocaleDateString("es-MX");
-      const lastDate = localStorage.getItem("bk_last_date");
-      
-      if (lastDate && lastDate !== today) {
-        await supabase.from('daily_habits').delete().neq('id', 'dummy');
-      }
-      localStorage.setItem("bk_last_date", today);
-
-      const { data: sData } = await supabase.from('sessions').select('*').order('id', { ascending: false });
-      const { data: hData } = await supabase.from('daily_habits').select('*');
-
-      if (sData) {
-        setSessions(sData);
-        const active = sData.filter(x => !x.archived);
-        const pokerSessionsData = active.filter(x => x.type !== "sports" && x.type !== "leak");
-        const sportsSessionsData = active.filter(x => x.type === "sports");
-        
-        setPoker(pokerSessionsData.reduce((a, x) => a + x.amount, INIT_POKER));
-        setSports(sportsSessionsData.reduce((a, x) => a + x.amount, INIT_SPORTS));
-      }
-
-      if (hData) {
-        const loadedHabits = { meditar: false, agua: false, omega: false, ejercicio: false };
-        const loadedTilt = {};
-        hData.forEach(item => {
-          if (item.id.startsWith('tilt_')) {
-            loadedTilt[item.id.replace('tilt_', '')] = item.status;
-          } else {
-            loadedHabits[item.id] = item.status;
-          }
-        });
-        setHabits(loadedHabits);
-        setTilt(loadedTilt);
-      }
-    } catch (error) {
-      console.error("Error cargando desde Supabase:", error);
-    }
-    setLoaded(true);
-  }, []);
-
-  useEffect(() => { load(); }, [load]);
+  const active = sessions.filter(x => !x.archived);
+  const todayStr = new Date().toLocaleDateString("es-MX", { day: "2-digit", month: "short" });
 
   // --- MOTOR DE NOTIFICACIONES ---
   const sendAlert = async (title, body) => {
@@ -158,6 +112,115 @@ export default function App() {
       alert("Permiso denegado por iOS.");
     }
   };
+
+  // --- SISTEMA DE ALERTAS BASADAS EN TIEMPO ---
+  useEffect(() => {
+    if (!loaded) return;
+
+    const checkTimeAlerts = () => {
+      const now = new Date();
+      const hours = now.getHours();
+      const minutes = now.getMinutes();
+      const today = now.toLocaleDateString("es-MX");
+
+      // Objeto para llevar el registro de las notificaciones enviadas hoy
+      let notifiedToday = {};
+      try {
+        notifiedToday = JSON.parse(localStorage.getItem(`bk_alerts_${today}`)) || {};
+      } catch (e) {}
+
+      // 10:00 AM - Check-in Matutino
+      if (hours === 10 && minutes === 0 && !notifiedToday.morning) {
+        sendAlert("🌅 ¡Buenos días!", "No olvides tu Omega-3 y tu primer litro de agua antes de la primera sesión.");
+        notifiedToday.morning = true;
+      }
+
+      // 2:00 PM - Revisión de Estado Mental
+      if (hours === 14 && minutes === 0 && !notifiedToday.afternoon) {
+        sendAlert("🧠 Check-in", "¿Cómo va el tilt hoy? Si vas a jugar, asegúrate de estar calmado.");
+        notifiedToday.afternoon = true;
+      }
+
+      // 8:00 PM - Recordatorio de Estudio
+      if (hours === 20 && minutes === 0 && !notifiedToday.evening) {
+        sendAlert("📖 Hora de estudio", "Revisa tus Spots y Leaks antes de cerrar el día.");
+        notifiedToday.evening = true;
+      }
+
+      // 10:00 PM - Resumen del Día
+      if (hours === 22 && minutes === 0 && !notifiedToday.night) {
+        const todaySessions = active.filter(s => s.date === todayStr && s.type !== "leak");
+        if (todaySessions.length > 0) {
+            let pokerTotal = 0;
+            let sportsTotal = 0;
+            todaySessions.forEach(s => {
+                if (s.type === 'sports') sportsTotal += s.amount;
+                else pokerTotal += s.amount;
+            });
+            sendAlert("📊 Resumen del Día", `Poker: ${sgn(pokerTotal)}${fmt(pokerTotal)} USD | Deportivas: ${sgn(sportsTotal)}${fmt(sportsTotal, 0)} MXN. ¡A descansar!`);
+        }
+        notifiedToday.night = true;
+      }
+
+      localStorage.setItem(`bk_alerts_${today}`, JSON.stringify(notifiedToday));
+    };
+
+    // Checa la hora cada minuto
+    const intervalId = setInterval(checkTimeAlerts, 60000);
+    // Ejecuta una vez al inicio por si acaba de dar la hora
+    checkTimeAlerts();
+
+    return () => clearInterval(intervalId);
+  }, [loaded, active, todayStr]);
+
+  // --- NUBE: CARGAR DATOS Y RESET DIARIO ---
+  const load = useCallback(async () => {
+    try {
+      if ('Notification' in window) {
+        setPushStatus(Notification.permission === 'granted' ? 'Activas' : 'Permiso Denegado');
+      }
+
+      const today = new Date().toLocaleDateString("es-MX");
+      const lastDate = localStorage.getItem("bk_last_date");
+      
+      if (lastDate && lastDate !== today) {
+        await supabase.from('daily_habits').delete().neq('id', 'dummy');
+      }
+      localStorage.setItem("bk_last_date", today);
+
+      const { data: sData } = await supabase.from('sessions').select('*').order('id', { ascending: false });
+      const { data: hData } = await supabase.from('daily_habits').select('*');
+
+      if (sData) {
+        setSessions(sData);
+        const activeData = sData.filter(x => !x.archived);
+        const pokerSessionsData = activeData.filter(x => x.type !== "sports" && x.type !== "leak");
+        const sportsSessionsData = activeData.filter(x => x.type === "sports");
+        
+        setPoker(pokerSessionsData.reduce((a, x) => a + x.amount, INIT_POKER));
+        setSports(sportsSessionsData.reduce((a, x) => a + x.amount, INIT_SPORTS));
+      }
+
+      if (hData) {
+        const loadedHabits = { meditar: false, agua: false, omega: false, ejercicio: false };
+        const loadedTilt = {};
+        hData.forEach(item => {
+          if (item.id.startsWith('tilt_')) {
+            loadedTilt[item.id.replace('tilt_', '')] = item.status;
+          } else {
+            loadedHabits[item.id] = item.status;
+          }
+        });
+        setHabits(loadedHabits);
+        setTilt(loadedTilt);
+      }
+    } catch (error) {
+      console.error("Error cargando desde Supabase:", error);
+    }
+    setLoaded(true);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
 
   // --- NUBE: GUARDAR SESIÓN NORMAL ---
   const addSession = async () => {
@@ -243,7 +306,6 @@ export default function App() {
   const tiltColor = tiltScore >= 4 ? C.green : tiltScore >= 2 ? C.gold : C.red;
   const tiltLabel = tiltScore >= 4 ? "✓ Óptimo" : tiltScore >= 2 ? "⚠ Cuidado" : "✗ No juegues";
 
-  const active = sessions.filter(x => !x.archived);
   const archived = sessions.filter(x => x.archived);
   
   const pokerSessions = active.filter(x => x.type !== "sports" && x.type !== "leak");
