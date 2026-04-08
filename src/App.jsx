@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { supabase } from "./supabase"; // <-- Motor de nube reconectado
+import { supabase } from "./supabase";
 
 const RULES = {
   cash: [
@@ -47,6 +47,8 @@ const TILT_QS = [
   { id: "ate", label: "Comí bien" },
 ];
 
+const POSITIONS = ["UTG", "MP", "HJ", "CO", "BTN", "SB", "BB", "General"];
+
 const INIT_POKER = 50;
 const INIT_SPORTS = 500;
 
@@ -67,24 +69,40 @@ export default function App() {
   const [sports, setSports] = useState(INIT_SPORTS);
   const [habits, setHabits] = useState({ meditar: false, agua: false, omega: false, ejercicio: false });
   const [tilt, setTilt] = useState({});
-  const [showTilt, setShowTilt] = useState(false);
+  
   const [form, setForm] = useState({ type: "cash", result: "win", amount: "", note: "" });
+  const [leakForm, setLeakForm] = useState({ position: "BTN", note: "" });
+  
   const [rulesOpen, setRulesOpen] = useState(null);
   const [loaded, setLoaded] = useState(false);
   const [flash, setFlash] = useState(null);
   const [showArchived, setShowArchived] = useState(false);
 
-  // --- NUBE: CARGAR DATOS ---
+  // --- NUBE: CARGAR DATOS Y RESET DIARIO ---
   const load = useCallback(async () => {
     try {
+      // Algoritmo de Reset Diario
+      const today = new Date().toLocaleDateString("es-MX");
+      const lastDate = localStorage.getItem("bk_last_date");
+      
+      if (lastDate && lastDate !== today) {
+        // Es un día nuevo: Borramos hábitos de la nube
+        await supabase.from('daily_habits').delete().neq('id', 'dummy');
+      }
+      localStorage.setItem("bk_last_date", today);
+
       const { data: sData } = await supabase.from('sessions').select('*').order('id', { ascending: false });
       const { data: hData } = await supabase.from('daily_habits').select('*');
 
       if (sData) {
         setSessions(sData);
         const active = sData.filter(x => !x.archived);
-        setPoker(active.filter(x => x.type !== "sports").reduce((a, x) => a + x.amount, INIT_POKER));
-        setSports(active.filter(x => x.type === "sports").reduce((a, x) => a + x.amount, INIT_SPORTS));
+        // Filtramos para que los "leaks" no afecten el bankroll
+        const pokerSessionsData = active.filter(x => x.type !== "sports" && x.type !== "leak");
+        const sportsSessionsData = active.filter(x => x.type === "sports");
+        
+        setPoker(pokerSessionsData.reduce((a, x) => a + x.amount, INIT_POKER));
+        setSports(sportsSessionsData.reduce((a, x) => a + x.amount, INIT_SPORTS));
       }
 
       if (hData) {
@@ -108,7 +126,7 @@ export default function App() {
 
   useEffect(() => { load(); }, [load]);
 
-  // --- NUBE: GUARDAR SESIÓN ---
+  // --- NUBE: GUARDAR SESIÓN NORMAL ---
   const addSession = async () => {
     const amt = parseFloat(form.amount);
     if (!amt || amt <= 0) return;
@@ -126,8 +144,7 @@ export default function App() {
     const { error } = await supabase.from('sessions').insert([s]);
 
     if (!error) {
-      const next = [s, ...sessions];
-      setSessions(next);
+      setSessions([s, ...sessions]);
       if (form.type === "sports") setSports(p => parseFloat((p + value).toFixed(2)));
       else setPoker(p => parseFloat((p + value).toFixed(2)));
       
@@ -137,6 +154,32 @@ export default function App() {
       setTab("dash");
     } else {
       alert("Error al guardar en la nube.");
+    }
+  };
+
+  // --- NUBE: GUARDAR LEAK ---
+  const addLeak = async () => {
+    if (!leakForm.note.trim()) return;
+    
+    const s = {
+      id: Date.now(),
+      type: "leak",
+      amount: 0, // Los leaks no afectan el dinero
+      note: leakForm.note,
+      buyin: leakForm.position, // Usamos buyin para guardar la posición (UTG, etc.)
+      date: new Date().toLocaleDateString("es-MX", { day: "2-digit", month: "short" }),
+      archived: false,
+    };
+
+    const { error } = await supabase.from('sessions').insert([s]);
+
+    if (!error) {
+      setSessions([s, ...sessions]);
+      setLeakForm({ ...leakForm, note: "" });
+      setFlash("win");
+      setTimeout(() => setFlash(null), 1000);
+    } else {
+      alert("Error al guardar el leak.");
     }
   };
 
@@ -156,13 +199,14 @@ export default function App() {
 
   const tiltScore = TILT_QS.filter(q => tilt[q.id]).length;
   const tiltColor = tiltScore >= 4 ? C.green : tiltScore >= 2 ? C.gold : C.red;
-  const tiltLabel = tiltScore >= 4 ? "✓ Puedes jugar" : tiltScore >= 2 ? "⚠ Cuidado" : "✗ No juegues";
+  const tiltLabel = tiltScore >= 4 ? "✓ Óptimo" : tiltScore >= 2 ? "⚠ Cuidado" : "✗ No juegues";
 
   const active = sessions.filter(x => !x.archived);
   const archived = sessions.filter(x => x.archived);
   
-  const pokerSessions = active.filter(x => x.type !== "sports");
-  const sportsSessions = active.filter(x => x.type === "sports"); // <-- Filtrado deportivo
+  const pokerSessions = active.filter(x => x.type !== "sports" && x.type !== "leak");
+  const sportsSessions = active.filter(x => x.type === "sports");
+  const leakSessions = active.filter(x => x.type === "leak");
   
   const pokerWins = pokerSessions.filter(x => x.amount > 0).length;
   const pokerProfit = parseFloat((poker - INIT_POKER).toFixed(2));
@@ -296,33 +340,30 @@ export default function App() {
             ))}
           </div>
 
-          {/* Tilt + Habits */}
+          {/* Tilt + Habits (Siempre visible y auto-reseteable) */}
           <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: 14, marginBottom: 12 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-              <div style={{ fontSize: 9, letterSpacing: 3, color: C.muted, textTransform: "uppercase" }}>Rendimiento Hoy</div>
-              <div style={{ fontSize: 11, color: tiltColor, fontWeight: "bold" }}>{tiltLabel}</div>
+              <div style={{ fontSize: 9, letterSpacing: 3, color: C.muted, textTransform: "uppercase" }}>Hábitos de Hoy</div>
             </div>
-
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 16 }}>
               {[{ k: "meditar", l: "Meditaste" }, { k: "agua", l: "Agua" }, { k: "omega", l: "Omega-3" }, { k: "ejercicio", l: "Ejercicio" }].map(h => (
-                <button key={h.k} onClick={() => toggleHabit(h.k)} style={pill(habits[h.k], C.green)}>
+                <button key={h.k} onClick={() => toggleHabit(h.k)} style={pill(habits[h.k], C.blue)}>
                   {habits[h.k] ? "✓ " : ""}{h.l}
                 </button>
               ))}
             </div>
 
-            <button onClick={() => setShowTilt(!showTilt)} style={{ background: "none", border: "none", color: C.muted, fontSize: 10, cursor: "pointer", padding: 0, letterSpacing: 2, textTransform: "uppercase" }}>
-              {showTilt ? "▲" : "▼"} Estado mental
-            </button>
-            {showTilt && (
-              <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {TILT_QS.map(q => (
-                  <button key={q.id} onClick={() => toggleTilt(q.id)} style={pill(tilt[q.id], tiltColor)}>
-                    {tilt[q.id] ? "✓ " : ""}{q.label}
-                  </button>
-                ))}
-              </div>
-            )}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, borderTop: `1px solid ${C.border}`, paddingTop: 14 }}>
+              <div style={{ fontSize: 9, letterSpacing: 3, color: C.muted, textTransform: "uppercase" }}>Estado Mental</div>
+              <div style={{ fontSize: 11, color: tiltColor, fontWeight: "bold" }}>{tiltLabel}</div>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {TILT_QS.map(q => (
+                <button key={q.id} onClick={() => toggleTilt(q.id)} style={pill(tilt[q.id], tiltColor)}>
+                  {tilt[q.id] ? "✓ " : ""}{q.label}
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Poker ladder */}
@@ -366,7 +407,7 @@ export default function App() {
               value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })}
               style={{ width: "100%", padding: "13px 14px", borderRadius: 9, border: `1px solid ${C.border}`, background: C.surface, color: C.text, fontSize: 15, fontFamily: "Georgia, serif", boxSizing: "border-box", marginBottom: 10, outline: "none" }}
             />
-            <input type="text" placeholder="Nota opcional — ej: 'AA vs KK', 'over Liga MX'"
+            <input type="text" placeholder="Nota opcional — ej: 'AA vs KK'"
               value={form.note} onChange={e => setForm({ ...form, note: e.target.value })}
               style={{ width: "100%", padding: "13px 14px", borderRadius: 9, border: `1px solid ${C.border}`, background: C.surface, color: C.text, fontSize: 13, fontFamily: "Georgia, serif", boxSizing: "border-box", marginBottom: 14, outline: "none" }}
             />
@@ -374,11 +415,51 @@ export default function App() {
             <button onClick={addSession} style={{ width: "100%", padding: 15, borderRadius: 10, border: "none", cursor: "pointer", background: form.result === "win" ? C.greenD : C.redD, color: form.result === "win" ? C.green : C.red, fontSize: 14, fontFamily: "Georgia, serif", fontWeight: "bold", letterSpacing: 1 }}>
               REGISTRAR
             </button>
+          </div>
+        )}
 
-            <div style={{ marginTop: 16, padding: "12px 14px", borderRadius: 10, border: `1px solid ${C.redD}`, background: "#0a0408" }}>
-              <div style={{ fontSize: 9, letterSpacing: 3, color: C.red, marginBottom: 6 }}>ZONA PROHIBIDA</div>
-              <div style={{ fontSize: 12, color: "#774444", lineHeight: 1.8 }}>Blackjack · Baccarat · Ruleta · Slots</div>
-              <div style={{ fontSize: 10, color: "#553333", marginTop: 4 }}>Suma negativa. No hay edge posible. Nunca.</div>
+        {/* ── SPOTS & LEAKS (NUEVO) ── */}
+        {tab === "leaks" && (
+          <div>
+            <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }}>
+              <div style={{ fontSize: 9, letterSpacing: 3, color: C.gold, textTransform: "uppercase", marginBottom: 14 }}>Registrar Error / Leak</div>
+              
+              <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>Posición en la mesa:</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
+                {POSITIONS.map(p => (
+                  <button key={p} onClick={() => setLeakForm({ ...leakForm, position: p })} 
+                    style={{ padding: "8px 12px", borderRadius: 8, border: `1px solid ${leakForm.position === p ? C.gold : C.border}`, background: leakForm.position === p ? C.gold + "22" : C.surface, color: leakForm.position === p ? C.gold : C.muted, fontSize: 12, cursor: "pointer", fontFamily: "Georgia, serif" }}>
+                    {p}
+                  </button>
+                ))}
+              </div>
+
+              <textarea 
+                placeholder="Describe el error... ej: Pagué un 3bet fuera de posición con AJo y me dominaron."
+                value={leakForm.note} onChange={e => setLeakForm({ ...leakForm, note: e.target.value })}
+                style={{ width: "100%", padding: "13px 14px", borderRadius: 9, border: `1px solid ${C.border}`, background: C.surface, color: C.text, fontSize: 13, fontFamily: "Georgia, serif", boxSizing: "border-box", marginBottom: 14, outline: "none", minHeight: "80px", resize: "none" }}
+              />
+
+              <button onClick={addLeak} style={{ width: "100%", padding: 15, borderRadius: 10, border: "none", cursor: "pointer", background: C.gold + "33", color: C.gold, fontSize: 14, fontFamily: "Georgia, serif", fontWeight: "bold", letterSpacing: 1 }}>
+                GUARDAR LEAK
+              </button>
+            </div>
+
+            {/* Lista de Leaks */}
+            <div style={{ background: C.surface, borderRadius: 14, padding: "0 10px" }}>
+              <div style={{ fontSize: 9, letterSpacing: 3, color: C.muted, textTransform: "uppercase", padding: "14px 6px" }}>Áreas de Mejora ({leakSessions.length})</div>
+              {leakSessions.map(s => (
+                <div key={s.id} style={{ display: "flex", gap: 12, padding: "12px 6px", borderBottom: `1px solid ${C.border}` }}>
+                  <div style={{ background: C.card, border: `1px solid ${C.border}`, color: C.gold, padding: "4px 8px", borderRadius: 6, fontSize: 10, fontWeight: "bold", height: "fit-content" }}>
+                    {s.buyin || "GNRL"}
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 13, color: C.text, lineHeight: 1.4 }}>{s.note}</div>
+                    <div style={{ fontSize: 10, color: C.muted, marginTop: 4 }}>{s.date}</div>
+                  </div>
+                </div>
+              ))}
+              {leakSessions.length === 0 && <div style={{ textAlign: "center", color: C.muted, padding: "20px 0", fontSize: 12 }}>Sin leaks registrados. ¡Excelente!</div>}
             </div>
           </div>
         )}
@@ -393,11 +474,11 @@ export default function App() {
               </button>
             </div>
 
-            {(showArchived ? archived : active).length === 0 && (
+            {(showArchived ? archived : active).filter(x => x.type !== "leak").length === 0 && (
               <div style={{ textAlign: "center", color: C.muted, padding: "30px 0", fontSize: 13 }}>Sin sesiones</div>
             )}
 
-            {(showArchived ? archived : active).map(s => (
+            {(showArchived ? archived : active).filter(x => x.type !== "leak").map(s => (
               <div key={s.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "11px 0", borderBottom: `1px solid ${C.border}` }}>
                 <div>
                   <div style={{ fontSize: 12, color: C.text }}>
@@ -466,17 +547,18 @@ export default function App() {
       </div>
 
       {/* Bottom nav */}
-      <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: C.surface, borderTop: `1px solid ${C.border}`, display: "flex", justifyContent: "center" }}>
+      <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: C.surface, borderTop: `1px solid ${C.border}`, display: "flex", justifyContent: "center", zIndex: 10 }}>
         <div style={{ display: "flex", width: "100%", maxWidth: 480 }}>
           {[
             { k: "dash", icon: "◈", l: "Inicio" },
-            { k: "reg", icon: "+", l: "Registrar" },
+            { k: "reg", icon: "+", l: "Sesión" },
+            { k: "leaks", icon: "⚑", l: "Leaks" },
             { k: "hist", icon: "≡", l: "Historial" },
             { k: "rules", icon: "◉", l: "Reglas" },
           ].map(t => (
             <button key={t.k} onClick={() => setTab(t.k)} style={{ flex: 1, padding: "13px 4px 9px", border: "none", background: "transparent", cursor: "pointer", color: tab === t.k ? C.blue : C.muted, fontFamily: "Georgia, serif" }}>
               <div style={{ fontSize: 15 }}>{t.icon}</div>
-              <div style={{ fontSize: 8, letterSpacing: 1, marginTop: 3, textTransform: "uppercase" }}>{t.l}</div>
+              <div style={{ fontSize: 7, letterSpacing: 1, marginTop: 3, textTransform: "uppercase" }}>{t.l}</div>
             </button>
           ))}
         </div>
