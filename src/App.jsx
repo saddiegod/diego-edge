@@ -1,5 +1,4 @@
-import { useState, useEffect } from "react";
-import { supabase } from "./supabase";
+import { useState, useEffect, useCallback } from "react";
 
 const RULES = {
   cash: [
@@ -8,14 +7,14 @@ const RULES = {
     "Si el bankroll baja a $25, dejas de jugar hasta recargar",
     "Máximo 2 horas por sesión en un solo bloque",
     "No jugar con menos de 6 horas de sueño",
-    "Stop-loss emocional: si sientes tilt, cierras inmediatamente",
+    "Stop-loss emocional: si sientes tilt, cierra inmediatamente",
   ],
   tournament: [
-    "Máximo 5% del bankroll por torneo ($2.50 con bankroll de $50)",
+    "Máximo 5% del bankroll por torneo ($2.50 con $50)",
     "Máximo 3 torneos al día",
     "No re-entry si ya perdiste 2 torneos en el día",
-    "Registra resultado de cada torneo antes de abrir otro",
-    "Si pierdes 5 torneos seguidos, pausa 24h",
+    "Registra resultado antes de abrir otro torneo",
+    "Si pierdes 5 seguidos, pausa 24h",
   ],
   sports: [
     "Máximo 5% del bankroll por apuesta ($25 MXN)",
@@ -25,411 +24,414 @@ const RULES = {
     "No apostar para recuperar pérdidas del día",
   ],
   casino: [
-    "❌ BLACKJACK — PROHIBIDO",
-    "❌ BACCARAT — PROHIBIDO",
-    "❌ RULETA — PROHIBIDO",
-    "❌ SLOTS — PROHIBIDO",
-    "Regla absoluta. Sin excepciones. Sin ‘solo una sesión’.",
+    "BLACKJACK — PROHIBIDO",
+    "BACCARAT — PROHIBIDO",
+    "RULETA — PROHIBIDO",
+    "SLOTS — PROHIBIDO",
+    "Regla absoluta. Sin excepciones.",
   ],
 };
 
-const UPGRADE_RULES = [
-  { bankroll: 100, action: "Puedes subir a NL5 ($0.02/$0.05)" },
-  { bankroll: 250, action: "Puedes subir a NL10" },
-  { bankroll: 75, action: "Puedes jugar torneos hasta $5 buyin" },
+const POKER_LADDER = [
+  { at: 100, label: "NL5" },
+  { at: 250, label: "NL10" },
+  { at: 500, label: "NL25" },
 ];
 
-const SPORTS_UPGRADE_RULES = [
-  { bankroll: 1000, pct: 5, action: "Puedes subir a un stake mayor (ej. 100 MXN)" },
-  { bankroll: 2500, pct: 4, action: "Puedes subir a un stake mayor (ej. 100 MXN)" },
-  { bankroll: 5000, pct: 3, action: "Puedes subir a un stake mayor (ej. 150 MXN)" }
+const TILT_QS = [
+  { id: "sleep", label: "6h+ de sueño" },
+  { id: "calm", label: "Me siento calmado" },
+  { id: "noAlcohol", label: "Sin alcohol" },
+  { id: "notChasing", label: "Sin urgencia de recuperar" },
+  { id: "ate", label: "Comí bien" },
 ];
 
-const INITIAL = {
-  poker: 50,
-  sports: 500,
+const INIT_POKER = 50;
+const INIT_SPORTS = 500;
+
+const C = {
+  bg: "#07070f", surface: "#0d0d1c", card: "#111122",
+  border: "#1c1c35", green: "#4ade80", greenD: "#14532d",
+  red: "#f87171", redD: "#7f1d1d", blue: "#60a5fa", blueD: "#1e3a5f",
+  gold: "#fbbf24", muted: "#44446a", text: "#e0ddf0", textDim: "#7777aa",
 };
 
-export default function BankrollManager() {
-  const [tab, setTab] = useState("dashboard");
-  const [poker, setPoker] = useState(INITIAL.poker);
-  const [sports, setSports] = useState(INITIAL.sports);
-  const [sessions, setSessions] = useState([]);
-  const [archivedSessions, setArchivedSessions] = useState([]);
-  const [showArchived, setShowArchived] = useState(false);
-  const [habits, setHabits] = useState({ meditar: false, agua: false, omega: false });
-  const [loading, setLoading] = useState(true);
-  
-  const [form, setForm] = useState({
-    type: "cash",
-    amount: "",
-    result: "win",
-    note: "",
-    buyin: "2",
-  });
-  const [showRules, setShowRules] = useState(null);
+const fmt = (n, d = 2) => Number(n).toFixed(d);
+const sgn = (n) => (n >= 0 ? "+" : "");
 
-  // --- NUBE: CARGAR DATOS AL INICIAR ---
-  useEffect(() => {
-    fetchData();
+export default function App() {
+  const [tab, setTab] = useState("dash");
+  const [sessions, setSessions] = useState([]);
+  const [poker, setPoker] = useState(INIT_POKER);
+  const [sports, setSports] = useState(INIT_SPORTS);
+  const [habits, setHabits] = useState({ meditar: false, agua: false, omega: false, ejercicio: false });
+  const [tilt, setTilt] = useState({});
+  const [showTilt, setShowTilt] = useState(false);
+  const [form, setForm] = useState({ type: "cash", result: "win", amount: "", note: "" });
+  const [rulesOpen, setRulesOpen] = useState(null);
+  const [loaded, setLoaded] = useState(false);
+  const [flash, setFlash] = useState(null);
+  const [showArchived, setShowArchived] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const s = await window.storage.get("bk_sessions");
+      const h = await window.storage.get("bk_habits");
+      const t = await window.storage.get("bk_tilt");
+      if (s) {
+        const all = JSON.parse(s.value);
+        setSessions(all);
+        const active = all.filter(x => !x.archived);
+        setPoker(active.filter(x => x.type !== "sports").reduce((a, x) => a + x.amount, INIT_POKER));
+        setSports(active.filter(x => x.type === "sports").reduce((a, x) => a + x.amount, INIT_SPORTS));
+      }
+      if (h) setHabits(JSON.parse(h.value));
+      if (t) setTilt(JSON.parse(t.value));
+    } catch (_) {}
+    setLoaded(true);
   }, []);
 
-  const fetchData = async () => {
-    setLoading(true);
-    
-    // 1. Cargar Sesiones
-    const { data: sessionsData, error: sessionsError } = await supabase
-      .from('sessions')
-      .select('*')
-      .order('id', { ascending: false });
-    
-    // 2. Cargar Hábitos (Check-ins)
-    const { data: habitsData, error: habitsError } = await supabase
-      .from('daily_habits')
-      .select('*');
-    
-    if (sessionsData) {
-      // Separar activas de archivadas
-      const active = sessionsData.filter(s => !s.archived);
-      const archived = sessionsData.filter(s => s.archived);
-      
-      setSessions(active);
-      setArchivedSessions(archived);
-      
-      // Recalcular bankrolls SOLO basados en el historial activo
-      const pk = active.filter(s => s.type !== 'sports').reduce((acc, s) => acc + s.amount, INITIAL.poker);
-      const sp = active.filter(s => s.type === 'sports').reduce((acc, s) => acc + s.amount, INITIAL.sports);
-      setPoker(pk);
-      setSports(sp);
-    }
-    
-    if (habitsData) {
-      // Convertir datos de la DB a formato del estado local
-      const dbHabits = habitsData.reduce((acc, h) => {
-        acc[h.id] = h.status;
-        return acc;
-      }, {});
-      setHabits({...habits, ...dbHabits});
-    }
+  useEffect(() => { load(); }, [load]);
 
-    if (sessionsError || habitsError) {
-      console.error("Error al cargar datos de la nube:", sessionsError, habitsError);
-    }
-    
-    setLoading(false);
+  const save = async (key, val) => {
+    try { await window.storage.set(key, JSON.stringify(val)); } catch (_) {}
   };
 
-  // --- NUBE: GUARDAR SESIÓN ---
   const addSession = async () => {
     const amt = parseFloat(form.amount);
-    if (!amt) return;
+    if (!amt || amt <= 0) return;
     const value = form.result === "win" ? amt : -amt;
-    
-    const newSession = {
-      id: Date.now(),
-      type: form.type,
-      amount: value,
-      note: form.note,
-      buyin: form.buyin,
+    const s = {
+      id: Date.now(), type: form.type, amount: value, note: form.note,
       date: new Date().toLocaleDateString("es-MX", { day: "2-digit", month: "short" }),
-      archived: false // Por defecto, es una sesión activa
+      archived: false,
     };
-
-    const { error } = await supabase.from('sessions').insert([newSession]);
-
-    if (!error) {
-      setSessions([newSession, ...sessions]);
-      if (form.type === "sports") setSports((s) => +(s + value).toFixed(2));
-      else setPoker((p) => +(p + value).toFixed(2));
-      setForm({ ...form, amount: "", note: "" });
-      setTab("dashboard");
-    } else {
-      console.error("Error al sincronizar con la nube:", error.message);
-      alert("Error al sincronizar con la nube.");
-    }
+    const next = [s, ...sessions];
+    setSessions(next);
+    if (form.type === "sports") setSports(p => parseFloat((p + value).toFixed(2)));
+    else setPoker(p => parseFloat((p + value).toFixed(2)));
+    await save("bk_sessions", next);
+    setForm({ ...form, amount: "", note: "" });
+    setFlash(value > 0 ? "win" : "loss");
+    setTimeout(() => setFlash(null), 1000);
+    setTab("dash");
   };
 
-  // --- FUNCIÓN: ARCHIVAR DATOS (SOFT DELETE) ---
-  const archiveSystem = async () => {
-    const confirmReset = window.confirm("⚠️ ¿Archivar todos los datos? Empezarás tu bankroll desde cero, pero podrás ver el historial en la papelera.");
-    
-    if (confirmReset) {
-      // Tomamos los IDs de las sesiones activas
-      const idsToArchive = sessions.map(s => s.id);
-      if (idsToArchive.length === 0) return;
-
-      // Actualizamos esas sesiones en la nube para que archived = true
-      const { error } = await supabase.from('sessions').update({ archived: true }).in('id', idsToArchive);
-      
-      if (!error) {
-        // Borrar todos los hábitos guardados para empezar de cero
-        await supabase.from('daily_habits').delete().neq('id', 'borrar_todo');
-        
-        // Recargamos los datos desde la nube para actualizar las listas
-        fetchData();
-        setHabits({ meditar: false, agua: false, omega: false });
-        alert("Datos archivados con éxito.");
-        setTab("dashboard");
-      } else {
-        alert("Error al archivar: " + error.message);
-      }
-    }
+  const toggleHabit = async (k) => {
+    const next = { ...habits, [k]: !habits[k] };
+    setHabits(next);
+    await save("bk_habits", next);
   };
 
-  // --- NUBE: TOGGLE HÁBITO PERSISTENTE ---
-  const toggleHabit = async (h) => {
-    const newStatus = !habits[h];
-    setHabits({ ...habits, [h]: newStatus });
-    
-    // Upsert (inserta o actualiza) en la DB
-    const { error } = await supabase.from('daily_habits').upsert({ id: h, status: newStatus });
-    if (error) {
-      console.error("Error al guardar estado de hábito:", error.message);
-    }
+  const toggleTilt = async (k) => {
+    const next = { ...tilt, [k]: !tilt[k] };
+    setTilt(next);
+    await save("bk_tilt", next);
   };
 
-  const getGraphData = () => {
-    let current = INITIAL.poker;
-    const points = [INITIAL.poker, ...[...sessions].filter(s => s.type !== 'sports').reverse().map(s => current += s.amount)];
-    if (points.length < 2) return null;
-    const max = Math.max(...points, INITIAL.poker + 10);
-    const min = Math.min(...points, INITIAL.poker - 10);
-    return points.map((p, i) => `${(i / (points.length - 1)) * 100},${100 - ((p - min) / (max - min)) * 100}`).join(" ");
-  };
+  const tiltScore = TILT_QS.filter(q => tilt[q.id]).length;
+  const tiltColor = tiltScore >= 4 ? C.green : tiltScore >= 2 ? C.gold : C.red;
+  const tiltLabel = tiltScore >= 4 ? "✓ Puedes jugar" : tiltScore >= 2 ? "⚠ Cuidado" : "✗ No juegues";
 
-  const pokerROI = (((poker - INITIAL.poker) / INITIAL.poker) * 100).toFixed(1);
-  const sportsROI = (((sports - INITIAL.sports) / INITIAL.sports) * 100).toFixed(1);
+  const active = sessions.filter(x => !x.archived);
+  const archived = sessions.filter(x => x.archived);
+  const pokerSessions = active.filter(x => x.type !== "sports");
+  const pokerWins = pokerSessions.filter(x => x.amount > 0).length;
+  const pokerProfit = parseFloat((poker - INIT_POKER).toFixed(2));
+  const sportsProfit = parseFloat((sports - INIT_SPORTS).toFixed(2));
 
-  const pokerTotal = sessions.filter((s) => s.type !== "sports").length;
-  const pokerWins = sessions.filter((s) => s.type !== "sports" && s.amount > 0).length;
+  const sparkPoints = (() => {
+    const pts = [INIT_POKER];
+    let cur = INIT_POKER;
+    [...pokerSessions].reverse().forEach(s => { cur = parseFloat((cur + s.amount).toFixed(2)); pts.push(cur); });
+    if (pts.length < 2) return null;
+    const W = 120, H = 32;
+    const mn = Math.min(...pts) - 1, mx = Math.max(...pts) + 1;
+    const range = mx - mn || 1;
+    return pts.map((v, i) => `${(i / (pts.length - 1)) * W},${H - ((v - mn) / range) * H}`).join(" ");
+  })();
+
+  const streak = (() => {
+    let s = 0;
+    for (const x of pokerSessions) { if (x.amount > 0) s++; else break; }
+    return s;
+  })();
 
   const danger = poker < 30;
   const warning = poker < 40 && poker >= 30;
 
-  if (loading) return <div style={{ background: "#0a0a0f", height: "100vh", color: "#4a4a6a", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Georgia" }}>Sincronizando con la nube de Diego...</div>;
+  const pill = (on, color) => ({
+    padding: "7px 13px", borderRadius: 20,
+    border: `1px solid ${on ? color : C.border}`,
+    background: on ? color + "20" : "transparent",
+    color: on ? color : C.muted,
+    fontSize: 11, cursor: "pointer", fontFamily: "Georgia, serif",
+  });
+
+  const typeBtn = (v) => ({
+    flex: 1, padding: "9px 4px", borderRadius: 8, border: "none", cursor: "pointer",
+    background: form.type === v ? C.blueD : C.surface,
+    color: form.type === v ? C.blue : C.muted,
+    fontFamily: "Georgia, serif", fontSize: 11,
+  });
+
+  const resBtn = (v) => ({
+    flex: 1, padding: 12, borderRadius: 8, border: "none", cursor: "pointer",
+    background: form.result === v ? (v === "win" ? C.greenD : C.redD) : C.surface,
+    color: form.result === v ? (v === "win" ? C.green : C.red) : C.muted,
+    fontFamily: "Georgia, serif", fontSize: 13,
+  });
+
+  if (!loaded) return (
+    <div style={{ background: C.bg, height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: C.muted, fontFamily: "monospace", letterSpacing: 3, fontSize: 11 }}>
+      CARGANDO...
+    </div>
+  );
 
   return (
-    <div style={{ fontFamily: "'Georgia', serif", background: "#0a0a0f", minHeight: "100vh", color: "#e8e0d0", padding: "0 0 80px" }}>
-      
-      {/* Contenedor Flotante Cohesivo (Ajustado para llenar marcos) */}
-      <div style={{ maxWidth: 480, margin: "20px auto 100px", background: "#0d0d1a", border: "1px solid #1a1a2a", borderRadius: 16, boxShadow: "0 10px 30px rgba(0,0,0,0.5)", paddingBottom: 20, position: 'relative' }}>
-        
-        {/* Header */}
-        <div style={{ background: "linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)", padding: "24px 20px 16px", borderBottom: "1px solid #2a2a4a", borderTopLeftRadius: 16, borderTopRightRadius: 16 }}>
-          <div style={{ fontSize: 11, letterSpacing: 4, color: "#7a7a9a", textTransform: "uppercase", marginBottom: 4 }}>Gestión</div>
-          <div style={{ fontSize: 28, fontWeight: "bold", color: "#e8e0d0", letterSpacing: -0.5 }}>Diego's Bankroll</div>
+    <div style={{ fontFamily: "'Georgia', serif", background: C.bg, minHeight: "100vh", color: C.text, paddingBottom: 80 }}>
+      {flash && (
+        <div style={{ position: "fixed", inset: 0, background: flash === "win" ? "rgba(74,222,128,0.07)" : "rgba(248,113,113,0.07)", pointerEvents: "none", zIndex: 999 }} />
+      )}
+
+      {/* Header */}
+      <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "18px 20px 12px" }}>
+        <div style={{ fontSize: 10, letterSpacing: 4, color: C.muted, textTransform: "uppercase", marginBottom: 2 }}>Sistema de Gestión</div>
+        <div style={{ fontSize: 22, fontWeight: "bold", color: C.text }}>Diego's Edge ♠</div>
+      </div>
+
+      {(danger || warning) && (
+        <div style={{ background: danger ? "#120406" : "#121004", borderLeft: `3px solid ${danger ? C.red : C.gold}`, padding: "9px 20px", fontSize: 12, color: danger ? C.red : C.gold }}>
+          {danger ? "⛔ Bankroll crítico — Pausa esta semana" : "⚠️ Bankroll bajo — Máximo 1 buyin por sesión"}
         </div>
+      )}
 
-        {/* Status bar */}
-        {danger && (
-          <div style={{ background: "#3a0a0a", borderLeft: "3px solid #cc3333", padding: "10px 20px", fontSize: 13, color: "#ff6666" }}>
-            ⚠️ Bankroll crítico — Pausa esta semana. No más sesiones.
-          </div>
-        )}
-        {warning && !danger && (
-          <div style={{ background: "#2a1a0a", borderLeft: "3px solid #cc7733", padding: "10px 20px", fontSize: 13, color: "#ffaa66" }}>
-            ⚠️ Bankroll bajo — Reduce a 1 buyin por sesión.
-          </div>
-        )}
+      <div style={{ padding: "16px", maxWidth: 480, margin: "0 auto" }}>
 
-        {/* Content (Añadido relleno para consistencia) */}
-        <div style={{ padding: "20px" }}>
+        {/* ── DASHBOARD ── */}
+        {tab === "dash" && <>
 
-          {tab === "dashboard" && (
-            <div>
-              {/* Cards */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 20 }}>
-                <div style={{ background: "linear-gradient(135deg, #1e2a1e, #162316)", border: "1px solid #2a4a2a", borderRadius: 12, padding: 16, flex: 1, position: 'relative', overflow: 'hidden' }}>
-                  <div style={{ fontSize: 10, letterSpacing: 3, color: "#4a8a4a", textTransform: "uppercase", marginBottom: 8 }}>Poker (USD)</div>
-                  <div style={{ fontSize: 28, fontWeight: "bold", color: poker >= INITIAL.poker ? "#6adb6a" : "#db6a6a" }}>${poker.toFixed(2)}</div>
-                  
-                  {getGraphData() && (
-                    <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={{ width: "100%", height: "30px", marginTop: "10px" }}>
-                      <polyline fill="none" stroke="#6adb6a" strokeWidth="3" points={getGraphData()} />
-                    </svg>
-                  )}
-                  
-                  <div style={{ fontSize: 12, color: parseFloat(pokerROI) >= 0 ? "#6adb6a" : "#db6a6a", marginTop: 8 }}>
-                    {parseFloat(pokerROI) >= 0 ? "▲" : "▼"} {Math.abs(pokerROI)}% ROI
-                  </div>
-                </div>
-
-                <div style={{ background: "linear-gradient(135deg, #1e1e2a, #161623", border: "1px solid #2a2a5a", borderRadius: 12, padding: 16, flex: 1 }}>
-                  <div style={{ fontSize: 10, letterSpacing: 3, color: "#4a4aaa", textTransform: "uppercase", marginBottom: 8 }}>Deportivas (MXN)</div>
-                  <div style={{ fontSize: 28, fontWeight: "bold", color: sports >= INITIAL.sports ? "#6a8adb" : "#db6a6a" }}>${sports.toFixed(0)}</div>
-                  <div style={{ fontSize: 12, color: parseFloat(sportsROI) >= 0 ? "#6a8adb" : "#db6a6a", marginTop: 8 }}>
-                    {parseFloat(sportsROI) >= 0 ? "▲" : "▼"} {Math.abs(sportsROI)}% ROI
-                  </div>
-                </div>
+          {/* Bankroll cards */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+            <div style={{ background: C.card, border: `1px solid ${pokerProfit >= 0 ? C.greenD : C.redD}`, borderRadius: 14, padding: 14 }}>
+              <div style={{ fontSize: 9, letterSpacing: 3, color: C.muted, textTransform: "uppercase", marginBottom: 6 }}>Poker USD</div>
+              <div style={{ fontSize: 26, fontWeight: "bold", color: pokerProfit >= 0 ? C.green : C.red }}>${fmt(poker)}</div>
+              <div style={{ fontSize: 11, color: pokerProfit >= 0 ? C.green : C.red, marginTop: 3 }}>
+                {sgn(pokerProfit)}{fmt(pokerProfit)} · {sgn(pokerProfit)}{fmt(((pokerProfit / INIT_POKER) * 100), 1)}%
               </div>
-
-              {/* HÁBITOS (Persistentes y Mejorados Estéticamente) */}
-              <div style={{ background: "#111120", border: "1px solid #1a1a2a", borderRadius: 12, padding: 16, marginBottom: 16 }}>
-                <div style={{ fontSize: 10, letterSpacing: 3, color: "#7a7a9a", textTransform: "uppercase", marginBottom: 12 }}>Check-in de Rendimiento</div>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                  {[
-                    { id: 'meditar', label: '🧘 Meditar' },
-                    { id: 'agua', label: '💧 Agua' },
-                    { id: 'omega', label: '💊 Omega 3' }
-                  ].map(h => (
-                    <button key={h.id} onClick={() => toggleHabit(h.id)} style={{
-                      flex: 1,
-                      background: habits[h.id] ? "#1a3a1a" : "#0a0a0f",
-                      border: `1px solid ${habits[h.id] ? "#4a8a4a" : "#2a2a3a"}`,
-                      color: habits[h.id] ? "#6adb6a" : "#4a4a6a",
-                      padding: "10px 8px", borderRadius: "8px", fontSize: "11px", cursor: "pointer", fontFamily: "Georgia", textAlign: 'center'
-                    }}>{h.label}</button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Stats */}
-              <div style={{ background: "#111120", border: "1px solid #1a1a2a", borderRadius: 12, padding: 16, marginBottom: 16 }}>
-                <div style={{ fontSize: 10, letterSpacing: 3, color: "#7a7a9a", textTransform: "uppercase", marginBottom: 12 }}>Estadísticas Poker</div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-                  {[
-                    { label: "Sesiones", val: pokerTotal },
-                    { label: "Ganadas", val: pokerWins },
-                    { label: "Win rate", val: pokerTotal ? `${((pokerWins / pokerTotal) * 100).toFixed(0)}%` : "—" },
-                  ].map((s) => (
-                    <div key={s.label} style={{ textAlign: "center" }}>
-                      <div style={{ fontSize: 20, fontWeight: "bold", color: "#e8e0d0" }}>{s.val}</div>
-                      <div style={{ fontSize: 10, color: "#5a5a7a", marginTop: 2 }}>{s.label}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Escalera de Stakes Poker */}
-              <div style={{ background: "#111120", border: "1px solid #1a1a2a", borderRadius: 12, padding: 16, marginBottom: 16 }}>
-                <div style={{ fontSize: 10, letterSpacing: 3, color: "#7a7a9a", textTransform: "uppercase", marginBottom: 12 }}>Escalera de Stakes Poker (USD)</div>
-                {UPGRADE_RULES.map((r, i) => (
-                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, background: '#0a0a0f', padding: '10px', borderRadius: '8px', border: '1px solid #1a1a2a' }}>
-                    <div style={{
-                      width: 32, height: 32, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11,
-                      background: poker >= r.bankroll ? "#1a3a1a" : "#1a1a2a",
-                      border: `1px solid ${poker >= r.bankroll ? "#4a8a4a" : "#3a3a5a"}`,
-                      color: poker >= r.bankroll ? "#6adb6a" : "#5a5a7a",
-                    }}>{poker >= r.bankroll ? "✓" : `$${r.bankroll}`}</div>
-                    <div style={{ fontSize: 12, color: poker >= r.bankroll ? "#6adb6a" : "#5a5a7a" }}>{r.action}</div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Escalera Deportiva MXN (NUEVO) */}
-              <div style={{ background: "#111120", border: "1px solid #1a1a2a", borderRadius: 12, padding: 16 }}>
-                <div style={{ fontSize: 10, letterSpacing: 3, color: "#7a7a9a", textTransform: "uppercase", marginBottom: 12 }}>Escalera Deportiva (MXN)</div>
-                {SPORTS_UPGRADE_RULES.map((r, i) => (
-                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, background: '#0a0a0f', padding: '10px', borderRadius: '8px', border: '1px solid #1a1a2a' }}>
-                    <div style={{
-                      width: 32, height: 32, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11,
-                      background: sports >= r.bankroll ? "#1a1a2e" : "#1a1a2a",
-                      border: `1px solid ${sports >= r.bankroll ? "#4a4aaa" : "#3a3a5a"}`,
-                      color: sports >= r.bankroll ? "#8ab4f8" : "#5a5a7a",
-                    }}>{sports >= r.bankroll ? "✓" : `$${r.bankroll}`}</div>
-                    <div style={{ fontSize: 12, flex: 1, color: sports >= r.bankroll ? "#8ab4f8" : "#5a5a7a" }}>
-                       <div>{r.action} (${r.bankroll})</div>
-                       <div style={{fontSize: 10, color: '#5a5a7a'}}>Apuesta: {r.pct}% (${+(sports * r.pct / 100).toFixed(0)} MXN)</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-            </div>
-          )}
-
-          {tab === "registrar" && (
-            <div style={{ background: "#111120", border: "1px solid #1a1a2a", borderRadius: 12, padding: 16 }}>
-              <div style={{ fontSize: 10, letterSpacing: 3, color: "#7a7a9a", textTransform: "uppercase", marginBottom: 16 }}>Nueva Sesión</div>
-              <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-                {["cash", "tournament", "sports"].map((t) => (
-                  <button key={t} onClick={() => setForm({ ...form, type: t })}
-                    style={{ flex: 1, padding: "10px 4px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 11, background: form.type === t ? "#2a3a5a" : "#0d0d1a", color: form.type === t ? "#8ab4f8" : "#5a5a7a", fontFamily: "Georgia, serif" }}>
-                    {t === "cash" ? "Cash NL2" : t === "tournament" ? "Torneo" : "Deportiva"}
-                  </button>
-                ))}
-              </div>
-              <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-                {["win", "loss"].map((r) => (
-                  <button key={r} onClick={() => setForm({ ...form, result: r })}
-                    style={{ flex: 1, padding: "12px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 13, background: form.result === r ? (r === "win" ? "#1a3a1a" : "#3a1a1a") : "#0d0d1a", color: form.result === r ? (r === "win" ? "#6adb6a" : "#db6a6a") : "#5a5a7a", fontFamily: "Georgia, serif" }}>
-                    {r === "win" ? "▲ Ganancia" : "▼ Pérdida"}
-                  </button>
-                ))}
-              </div>
-              <input type="number" placeholder={form.type === "sports" ? "Monto en MXN" : "Monto en USD"}
-                value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })}
-                style={{ width: "100%", padding: "14px", borderRadius: 8, border: "1px solid #2a2a4a", background: "#0a0a0f", color: "#e8e0d0", fontSize: 16, fontFamily: "Georgia, serif", boxSizing: "border-box", marginBottom: 12 }}
-              />
-              <input type="text" placeholder="Nota (opcional)"
-                value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })}
-                style={{ width: "100%", padding: "14px", borderRadius: 8, border: "1px solid #2a2a4a", background: "#0a0a0f", color: "#e8e0d0", fontSize: 14, fontFamily: "Georgia, serif", boxSizing: "border-box", marginBottom: 16 }}
-              />
-              <button onClick={addSession} style={{ width: "100%", padding: "16px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 15, background: "#2a4a8a", color: "#e8e0d0", fontFamily: "Georgia, serif", fontWeight: "bold" }}>Registrar Sesión</button>
-            </div>
-          )}
-
-          {tab === "historial" && (
-            <div style={{ background: "#111120", border: "1px solid #1a1a2a", borderRadius: 12, padding: 16 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-                <div style={{ fontSize: 10, letterSpacing: 3, color: "#7a7a9a", textTransform: "uppercase" }}>
-                  {showArchived ? "Papelera" : "Historial Activo"}
-                </div>
-                <button onClick={() => setShowArchived(!showArchived)} style={{ fontSize: 10, background: "none", border: "1px solid #3a3a5a", color: "#8ab4f8", borderRadius: 4, padding: "4px 8px", cursor: "pointer" }}>
-                  Ver {showArchived ? "Activos" : "Eliminados"}
-                </button>
-              </div>
-              
-              {(showArchived ? archivedSessions : sessions).length === 0 && (
-                <div style={{ textAlign: "center", color: "#5a5a7a", fontSize: 12, padding: "20px 0" }}>No hay registros aquí.</div>
+              {sparkPoints && (
+                <svg viewBox="0 0 120 32" style={{ width: "100%", height: 24, marginTop: 8, display: "block" }}>
+                  <polyline fill="none" stroke={pokerProfit >= 0 ? C.green : C.red} strokeWidth="1.5" strokeLinejoin="round" points={sparkPoints} />
+                </svg>
               )}
-
-              {(showArchived ? archivedSessions : sessions).map((s) => (
-                <div key={s.id} style={{ background: "#0a0a0f", border: `1px solid ${s.amount > 0 ? "#1a3a1a" : "#3a1a1a"}`, borderRadius: 10, padding: 14, marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center", opacity: showArchived ? 0.6 : 1, border: '1px solid #1a1a2a' }}>
-                  <div>
-                    <div style={{ fontSize: 13, color: "#c0b8a8" }}>{s.type.toUpperCase()} · {s.note}</div>
-                    <div style={{ fontSize: 11, color: "#5a5a7a" }}>{s.date}</div>
-                  </div>
-                  <div style={{ fontSize: 18, fontWeight: "bold", color: s.amount > 0 ? "#6adb6a" : "#db6a6a" }}>{s.amount > 0 ? "+" : ""}{s.amount.toFixed(2)}</div>
-                </div>
-              ))}
             </div>
-          )}
 
-          {tab === "reglas" && (
-            <div style={{ background: "#111120", border: "1px solid #1a1a2a", borderRadius: 12, padding: 16 }}>
-              <div style={{ fontSize: 10, letterSpacing: 3, color: "#7a7a9a", textTransform: "uppercase", marginBottom: 16 }}>Reglas y Sistema</div>
-              {Object.keys(RULES).map(key => (
-                <div key={key} style={{ marginBottom: 12 }}>
-                  <button onClick={() => setShowRules(showRules === key ? null : key)} style={{ width: "100%", textAlign: "left", padding: "14px", borderRadius: 10, border: "1px solid #1a1a2a", background: "#0a0a0f", color: "#e8e0d0", fontFamily: "Georgia", cursor: "pointer" }}>
-                    {key.toUpperCase()} {showRules === key ? "▲" : "▼"}
-                  </button>
-                  {showRules === key && (
-                    <div style={{ padding: "12px", fontSize: "12px", color: "#7a7a9a" }}>
-                      {RULES[key].map((r, i) => <div key={i} style={{ marginBottom: 8, background: '#0a0a0f', padding: '10px', borderRadius: '8px', border: '1px solid #1a1a2a' }}>• {r}</div>)}
-                    </div>
-                  )}
-                </div>
-              ))}
-              
-              {/* BOTÓN DE BORRADO LÓGICO */}
-              <div style={{ marginTop: "40px", borderTop: "1px solid #2a2a3a", paddingTop: "20px" }}>
-                <button onClick={archiveSystem} style={{ width: "100%", padding: "12px", borderRadius: 10, background: "transparent", border: "1px solid #4a1a1a", color: "#cc3333", fontSize: "11px", cursor: "pointer", fontFamily: "Georgia" }}>
-                  BORRAR DATOS (ARCHIVAR)
-                </button>
+            <div style={{ background: C.card, border: `1px solid ${sportsProfit >= 0 ? C.blueD : C.redD}`, borderRadius: 14, padding: 14 }}>
+              <div style={{ fontSize: 9, letterSpacing: 3, color: C.muted, textTransform: "uppercase", marginBottom: 6 }}>Deportivas MXN</div>
+              <div style={{ fontSize: 26, fontWeight: "bold", color: sportsProfit >= 0 ? C.blue : C.red }}>${fmt(sports, 0)}</div>
+              <div style={{ fontSize: 11, color: sportsProfit >= 0 ? C.blue : C.red, marginTop: 3 }}>
+                {sgn(sportsProfit)}{fmt(sportsProfit, 0)} · {sgn(sportsProfit)}{fmt(((sportsProfit / INIT_SPORTS) * 100), 1)}%
               </div>
+              <div style={{ fontSize: 10, color: C.muted, marginTop: 12 }}>Max: ${fmt(sports * 0.05, 0)} MXN/apuesta</div>
             </div>
-          )}
-        </div>
+          </div>
+
+          {/* Stats */}
+          <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: 14, marginBottom: 12, display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 4 }}>
+            {[
+              { v: pokerSessions.length, l: "Sesiones" },
+              { v: pokerWins, l: "Ganadas" },
+              { v: pokerSessions.length ? `${((pokerWins / pokerSessions.length) * 100).toFixed(0)}%` : "—", l: "Win rate" },
+              { v: streak > 0 ? `${streak}🔥` : "—", l: "Racha" },
+            ].map(s => (
+              <div key={s.l} style={{ textAlign: "center" }}>
+                <div style={{ fontSize: 18, fontWeight: "bold", color: C.text }}>{s.v}</div>
+                <div style={{ fontSize: 9, color: C.muted, marginTop: 2, letterSpacing: 1, textTransform: "uppercase" }}>{s.l}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Tilt + Habits */}
+          <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: 14, marginBottom: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <div style={{ fontSize: 9, letterSpacing: 3, color: C.muted, textTransform: "uppercase" }}>Rendimiento Hoy</div>
+              <div style={{ fontSize: 11, color: tiltColor, fontWeight: "bold" }}>{tiltLabel}</div>
+            </div>
+
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+              {[{ k: "meditar", l: "Meditaste" }, { k: "agua", l: "Agua" }, { k: "omega", l: "Omega-3" }, { k: "ejercicio", l: "Ejercicio" }].map(h => (
+                <button key={h.k} onClick={() => toggleHabit(h.k)} style={pill(habits[h.k], C.green)}>
+                  {habits[h.k] ? "✓ " : ""}{h.l}
+                </button>
+              ))}
+            </div>
+
+            <button onClick={() => setShowTilt(!showTilt)} style={{ background: "none", border: "none", color: C.muted, fontSize: 10, cursor: "pointer", padding: 0, letterSpacing: 2, textTransform: "uppercase" }}>
+              {showTilt ? "▲" : "▼"} Estado mental
+            </button>
+            {showTilt && (
+              <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {TILT_QS.map(q => (
+                  <button key={q.id} onClick={() => toggleTilt(q.id)} style={pill(tilt[q.id], tiltColor)}>
+                    {tilt[q.id] ? "✓ " : ""}{q.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Poker ladder */}
+          <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: 14, marginBottom: 12 }}>
+            <div style={{ fontSize: 9, letterSpacing: 3, color: C.muted, textTransform: "uppercase", marginBottom: 10 }}>Escalera Poker</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              {POKER_LADDER.map(r => {
+                const done = poker >= r.at;
+                return (
+                  <div key={r.at} style={{ flex: 1, textAlign: "center", padding: "10px 4px", borderRadius: 10, border: `1px solid ${done ? C.green : C.border}`, background: done ? C.greenD + "55" : "transparent" }}>
+                    <div style={{ fontSize: 13, fontWeight: "bold", color: done ? C.green : C.muted }}>{r.label}</div>
+                    <div style={{ fontSize: 10, color: done ? C.green : C.muted, marginTop: 2 }}>${r.at}</div>
+                    {done && <div style={{ fontSize: 12, marginTop: 4 }}>✓</div>}
+                    {!done && <div style={{ fontSize: 9, color: C.muted, marginTop: 4 }}>Faltan ${fmt(r.at - poker)}</div>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+        </>}
+
+        {/* ── REGISTRAR ── */}
+        {tab === "reg" && (
+          <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16 }}>
+            <div style={{ fontSize: 9, letterSpacing: 3, color: C.muted, textTransform: "uppercase", marginBottom: 14 }}>Nueva Sesión</div>
+
+            <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+              {[["cash", "Cash NL2"], ["tournament", "Torneo"], ["sports", "Deportiva"]].map(([v, l]) => (
+                <button key={v} onClick={() => setForm({ ...form, type: v })} style={typeBtn(v)}>{l}</button>
+              ))}
+            </div>
+
+            <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+              <button onClick={() => setForm({ ...form, result: "win" })} style={resBtn("win")}>▲ Ganancia</button>
+              <button onClick={() => setForm({ ...form, result: "loss" })} style={resBtn("loss")}>▼ Pérdida</button>
+            </div>
+
+            <input type="number" min="0" step="0.01"
+              placeholder={form.type === "sports" ? "Monto en MXN" : "Monto en USD"}
+              value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })}
+              style={{ width: "100%", padding: "13px 14px", borderRadius: 9, border: `1px solid ${C.border}`, background: C.surface, color: C.text, fontSize: 15, fontFamily: "Georgia, serif", boxSizing: "border-box", marginBottom: 10, outline: "none" }}
+            />
+            <input type="text" placeholder="Nota opcional — ej: 'AA vs KK', 'over Liga MX'"
+              value={form.note} onChange={e => setForm({ ...form, note: e.target.value })}
+              style={{ width: "100%", padding: "13px 14px", borderRadius: 9, border: `1px solid ${C.border}`, background: C.surface, color: C.text, fontSize: 13, fontFamily: "Georgia, serif", boxSizing: "border-box", marginBottom: 14, outline: "none" }}
+            />
+
+            <button onClick={addSession} style={{ width: "100%", padding: 15, borderRadius: 10, border: "none", cursor: "pointer", background: form.result === "win" ? C.greenD : C.redD, color: form.result === "win" ? C.green : C.red, fontSize: 14, fontFamily: "Georgia, serif", fontWeight: "bold", letterSpacing: 1 }}>
+              REGISTRAR
+            </button>
+
+            <div style={{ marginTop: 16, padding: "12px 14px", borderRadius: 10, border: `1px solid ${C.redD}`, background: "#0a0408" }}>
+              <div style={{ fontSize: 9, letterSpacing: 3, color: C.red, marginBottom: 6 }}>ZONA PROHIBIDA</div>
+              <div style={{ fontSize: 12, color: "#774444", lineHeight: 1.8 }}>Blackjack · Baccarat · Ruleta · Slots</div>
+              <div style={{ fontSize: 10, color: "#553333", marginTop: 4 }}>Suma negativa. No hay edge posible. Nunca.</div>
+            </div>
+          </div>
+        )}
+
+        {/* ── HISTORIAL ── */}
+        {tab === "hist" && (
+          <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <div style={{ fontSize: 9, letterSpacing: 3, color: C.muted, textTransform: "uppercase" }}>{showArchived ? "Archivadas" : "Historial"}</div>
+              <button onClick={() => setShowArchived(!showArchived)} style={{ fontSize: 10, background: "none", border: `1px solid ${C.border}`, color: C.muted, padding: "3px 10px", borderRadius: 6, cursor: "pointer" }}>
+                {showArchived ? "Ver activas" : "Archivadas"}
+              </button>
+            </div>
+
+            {(showArchived ? archived : active).length === 0 && (
+              <div style={{ textAlign: "center", color: C.muted, padding: "30px 0", fontSize: 13 }}>Sin sesiones</div>
+            )}
+
+            {(showArchived ? archived : active).map(s => (
+              <div key={s.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "11px 0", borderBottom: `1px solid ${C.border}` }}>
+                <div>
+                  <div style={{ fontSize: 12, color: C.text }}>
+                    <span style={{ color: s.type === "sports" ? C.blue : C.green, fontSize: 9, letterSpacing: 2, textTransform: "uppercase" }}>{s.type}</span>
+                    {s.note ? <span style={{ color: C.textDim }}> · {s.note}</span> : ""}
+                  </div>
+                  <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>{s.date}</div>
+                </div>
+                <div style={{ fontSize: 16, fontWeight: "bold", color: s.amount > 0 ? C.green : C.red }}>
+                  {s.amount > 0 ? "+" : ""}{fmt(s.amount)} {s.type === "sports" ? "MXN" : "USD"}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ── REGLAS ── */}
+        {tab === "rules" && (
+          <div>
+            {[
+              { k: "cash", l: "Cash NL2", c: C.green },
+              { k: "tournament", l: "Torneos", c: C.blue },
+              { k: "sports", l: "Deportivas", c: C.gold },
+              { k: "casino", l: "Casino — Prohibido", c: C.red },
+            ].map(sec => (
+              <div key={sec.k} style={{ marginBottom: 10 }}>
+                <button onClick={() => setRulesOpen(rulesOpen === sec.k ? null : sec.k)}
+                  style={{ width: "100%", textAlign: "left", padding: "13px 16px", borderRadius: 12, border: `1px solid ${rulesOpen === sec.k ? sec.c + "66" : C.border}`, background: C.card, color: sec.c, fontFamily: "Georgia, serif", fontSize: 13, cursor: "pointer", display: "flex", justifyContent: "space-between" }}>
+                  {sec.l} <span style={{ color: C.muted }}>{rulesOpen === sec.k ? "▲" : "▼"}</span>
+                </button>
+                {rulesOpen === sec.k && (
+                  <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderTop: "none", borderRadius: "0 0 12px 12px", padding: "8px 16px" }}>
+                    {RULES[sec.k].map((r, i) => (
+                      <div key={i} style={{ fontSize: 12, color: C.textDim, padding: "7px 0", borderBottom: i < RULES[sec.k].length - 1 ? `1px solid ${C.border}` : "none", lineHeight: 1.5 }}>
+                        {sec.k === "casino" ? `❌ ${r}` : `${i + 1}. ${r}`}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+
+            <div style={{ marginTop: 24, borderTop: `1px solid ${C.border}`, paddingTop: 16 }}>
+              <button onClick={async () => {
+                if (!confirm("¿Archivar todos los datos y empezar desde cero?")) return;
+                const next = sessions.map(s => ({ ...s, archived: true }));
+                setSessions(next);
+                setPoker(INIT_POKER);
+                setSports(INIT_SPORTS);
+                const emptyH = { meditar: false, agua: false, omega: false, ejercicio: false };
+                setHabits(emptyH);
+                setTilt({});
+                await save("bk_sessions", next);
+                await save("bk_habits", emptyH);
+                await save("bk_tilt", {});
+                setTab("dash");
+              }} style={{ width: "100%", padding: 12, borderRadius: 10, background: "transparent", border: `1px solid ${C.redD}`, color: "#aa3333", fontSize: 10, cursor: "pointer", fontFamily: "Georgia", letterSpacing: 2 }}>
+                ARCHIVAR Y RESETEAR
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Bottom nav */}
-      <div style={{ position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, background: "#0d0d1a", borderTop: "1px solid #2a2a3a", display: "flex", boxShadow: '0 -5px 20px rgba(0,0,0,0.5)', borderTopLeftRadius: 16, borderTopRightRadius: 16 }}>
-        {["dashboard", "registrar", "historial", "reglas"].map((t) => (
-          <button key={t} onClick={() => setTab(t)} style={{ flex: 1, padding: "18px 0", border: "none", background: "transparent", cursor: "pointer", color: tab === t ? "#8ab4f8" : "#4a4a6a", fontSize: "10px", textTransform: "uppercase" }}>
-            {t}
-          </button>
-        ))}
+      <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: C.surface, borderTop: `1px solid ${C.border}`, display: "flex", justifyContent: "center" }}>
+        <div style={{ display: "flex", width: "100%", maxWidth: 480 }}>
+          {[
+            { k: "dash", icon: "◈", l: "Inicio" },
+            { k: "reg", icon: "+", l: "Registrar" },
+            { k: "hist", icon: "≡", l: "Historial" },
+            { k: "rules", icon: "◉", l: "Reglas" },
+          ].map(t => (
+            <button key={t.k} onClick={() => setTab(t.k)} style={{ flex: 1, padding: "13px 4px 9px", border: "none", background: "transparent", cursor: "pointer", color: tab === t.k ? C.blue : C.muted, fontFamily: "Georgia, serif" }}>
+              <div style={{ fontSize: 15 }}>{t.icon}</div>
+              <div style={{ fontSize: 8, letterSpacing: 1, marginTop: 3, textTransform: "uppercase" }}>{t.l}</div>
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );
