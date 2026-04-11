@@ -65,9 +65,9 @@ const QUICK_SPORTS = [25, 50, 100, 200, 500];
 
 // ─── HELPERS ────────────────────────────────────────────────────────────────
 
-const fmt     = (n, d = 2) => Number(n).toFixed(d);
-const sgn     = (n)        => (n >= 0 ? "+" : "");
-const isValid = (hex)      => /^#[0-9A-Fa-f]{6}$/.test(hex);
+const fmt      = (n, d = 2) => Number(n).toFixed(d);
+const sgn      = (n)        => (n >= 0 ? "+" : "");
+const isValid  = (hex)      => /^#[0-9A-Fa-f]{6}$/.test(hex);
 
 const fmtElapsed = (ms) => {
   const totalSecs = Math.floor(ms / 1000);
@@ -86,6 +86,10 @@ const groupByDate = (arr) => {
   });
   return Object.entries(map);
 };
+
+// Generamos fechas dinámicas para evitar que queden atascadas si la app está abierta por días
+const getTodayStr = () => new Date().toLocaleDateString("es-MX", { day: "2-digit", month: "short" });
+const getMonthStr = () => new Date().toLocaleDateString("es-MX", { month: "short" });
 
 // ─── COLOR SYSTEM ────────────────────────────────────────────────────────────
 
@@ -116,7 +120,7 @@ const INPUT_STYLE_BASE = {
 const StarRating = ({ value, onChange, C }) => (
   <div style={{ display: "flex", gap: 4 }}>
     {[1, 2, 3, 4, 5].map((n) => (
-      <button key={n} onClick={() => onChange(n === value ? 0 : n)}
+      <button key={n} type="button" onClick={() => onChange(n === value ? 0 : n)}
         style={{ background: "none", border: "none", cursor: "pointer", fontSize: 22,
           color: n <= value ? C.gold : C.muted, padding: "0 2px", lineHeight: 1 }}>
         ★
@@ -302,11 +306,6 @@ export default function App() {
   // ── Memoized color object ─────────────────────────────────────────────────
   const C = useMemo(() => makeC(accent), [accent]);
 
-  const todayStr = useMemo(
-    () => new Date().toLocaleDateString("es-MX", { day: "2-digit", month: "short" }),
-    []
-  );
-
   // ── Memoized session splits ───────────────────────────────────────────────
   const active   = useMemo(() => sessions.filter((x) => !x.archived),  [sessions]);
   const archived = useMemo(() => sessions.filter((x) =>  x.archived),  [sessions]);
@@ -318,7 +317,6 @@ export default function App() {
     return () => clearInterval(id);
   }, [timerActive, timerStart]);
 
-  // Modified: fresh start → pre-session modal; resume → direct
   const toggleTimer = useCallback(() => {
     if (timerActive) {
       setTimerActive(false);
@@ -400,13 +398,16 @@ export default function App() {
       const now = new Date();
       const h = now.getHours(), m = now.getMinutes();
       const today = now.toLocaleDateString("es-MX");
+      const todayString = getTodayStr(); // Dinámico para evitar estancamiento
+
       let noted = {};
       try { noted = JSON.parse(localStorage.getItem(`bk_alerts_${today}`)) || {}; } catch {}
+      
       if (h === 10 && m === 0 && !noted.morning) { sendAlert("🌅 Buenos días", "Omega-3 y agua antes de la primera sesión."); noted.morning = true; }
       if (h === 14 && m === 0 && !noted.afternoon) { sendAlert("🧠 Check-in", "¿Cómo va el tilt?"); noted.afternoon = true; }
       if (h === 20 && m === 0 && !noted.evening) { sendAlert("📖 Hora de estudio", "Revisa Spots y Leaks."); noted.evening = true; }
       if (h === 22 && m === 0 && !noted.night) {
-        const todaySess = activeRef.current.filter((s) => s.date === todayStr && s.type !== "leak");
+        const todaySess = activeRef.current.filter((s) => s.date === todayString && s.type !== "leak");
         if (todaySess.length > 0) {
           const pt = todaySess.filter((s) => s.type !== "sports").reduce((a, s) => a + s.amount, 0);
           const st = todaySess.filter((s) => s.type === "sports").reduce((a, s) => a + s.amount, 0);
@@ -419,7 +420,7 @@ export default function App() {
     const id = setInterval(checkTimeAlerts, 60000);
     checkTimeAlerts();
     return () => clearInterval(id);
-  }, [loaded, session, sendAlert, todayStr]);
+  }, [loaded, session, sendAlert]);
 
   // ── Load ──────────────────────────────────────────────────────────────────
   const load = useCallback(async () => {
@@ -510,60 +511,86 @@ export default function App() {
     });
   }, []);
 
-  // ── Add session (with rating, duration, pre_note) ─────────────────────────
+  // ── Add session (Fix: Removes manual ID and handles real DB response) ─────
   const addSession = useCallback(async () => {
     const amt = parseFloat(form.amount);
     if (!amt || amt <= 0) return;
+    
     const value    = form.result === "win" ? amt : -amt;
     const duration = timerElapsedRef.current || 0;
     const preNote  = preSessionNoteRef.current || "";
-    const s = {
-      id: Date.now(),
+    
+    const payload = {
       user_id: session.user.id,
       type: form.type,
       amount: value,
       note: form.note,
-      date: todayStr,
+      date: getTodayStr(),
       archived: false,
       rating: form.rating || 0,
       duration,
       pre_note: preNote,
     };
-    const { error } = await supabase.from("sessions").insert([s]);
-    if (!error) {
-      setSessions((prev) => [s, ...prev]);
+    
+    // .select() es obligatorio en v2 para obtener el row con su ID autogenerado
+    const { data, error } = await supabase.from("sessions").insert([payload]).select();
+    
+    if (error) {
+      alert(`Error al guardar sesión: ${error.message}`);
+      return;
+    }
+
+    if (data && data.length > 0) {
+      const savedSession = data[0];
+      setSessions((prev) => [savedSession, ...prev]);
+      
       if (form.type === "sports") setSports((p) => parseFloat((p + value).toFixed(2)));
       else                        setPoker((p)  => parseFloat((p + value).toFixed(2)));
+      
       setForm((f) => ({ ...f, amount: "", note: "", rating: 0 }));
       setFlash(value > 0 ? "win" : "loss");
       setTimeout(() => setFlash(null), 900);
       setTab("dash");
+      
       if (form.type === "cash" && value <= -6) sendAlert("⚠️ STOP LOSS", "3 buy-ins perdidos. Cierra la mesa.");
       if (form.type === "cash" && value >= 10)  sendAlert("🏆 Buena sesión", "Protege las ganancias.");
-    } else { alert("Error al guardar."); }
-  }, [form, session, todayStr, sendAlert]);
+    }
+  }, [form, session, sendAlert]);
 
   // ── Add leak ──────────────────────────────────────────────────────────────
   const addLeak = useCallback(async () => {
     if (!leakForm.note.trim()) return;
-    const s = {
-      id: Date.now(), user_id: session.user.id, type: "leak",
-      amount: 0, note: leakForm.note, buyin: leakForm.position,
-      date: todayStr, archived: false,
+    
+    const payload = {
+      user_id: session.user.id, 
+      type: "leak",
+      amount: 0, 
+      note: leakForm.note, 
+      buyin: leakForm.position,
+      date: getTodayStr(), 
+      archived: false,
     };
-    const { error } = await supabase.from("sessions").insert([s]);
-    if (!error) {
-      setSessions((prev) => [s, ...prev]);
+    
+    const { data, error } = await supabase.from("sessions").insert([payload]).select();
+    
+    if (error) {
+      alert(`Error al guardar leak: ${error.message}`);
+      return;
+    }
+
+    if (data && data.length > 0) {
+      setSessions((prev) => [data[0], ...prev]);
       setLeakForm((f) => ({ ...f, note: "" }));
-      setFlash("win"); setTimeout(() => setFlash(null), 900);
-    } else { alert("Error al guardar leak."); }
-  }, [leakForm, session, todayStr]);
+      setFlash("win"); 
+      setTimeout(() => setFlash(null), 900);
+    }
+  }, [leakForm, session]);
 
   // ── Toggle habit / tilt ───────────────────────────────────────────────────
   const toggleHabit = useCallback(async (k) => {
     setHabits((prev) => {
       const next = !prev[k];
-      supabase.from("daily_habits").upsert({ id: k, user_id: session.user.id, status: next });
+      supabase.from("daily_habits").upsert({ id: k, user_id: session.user.id, status: next }).catch(console.error);
       return { ...prev, [k]: next };
     });
   }, [session]);
@@ -571,7 +598,7 @@ export default function App() {
   const toggleTilt = useCallback(async (k) => {
     setTilt((prev) => {
       const next = !prev[k];
-      supabase.from("daily_habits").upsert({ id: `tilt_${k}`, user_id: session.user.id, status: next });
+      supabase.from("daily_habits").upsert({ id: `tilt_${k}`, user_id: session.user.id, status: next }).catch(console.error);
       return { ...prev, [k]: next };
     });
   }, [session]);
@@ -585,10 +612,11 @@ export default function App() {
 
   // ── Archive all ───────────────────────────────────────────────────────────
   const archiveAll = useCallback(async () => {
-    if (!confirm("¿Archivar todos los datos y empezar desde cero?")) return;
+    if (!window.confirm("¿Archivar todos los datos y empezar desde cero?")) return;
     const activeIds = sessions.filter((s) => !s.archived).map((s) => s.id);
     if (activeIds.length > 0) await supabase.from("sessions").update({ archived: true }).in("id", activeIds);
     await supabase.from("daily_habits").delete().eq("user_id", session.user.id).neq("id", "dummy");
+    
     setSessions((prev) => prev.map((s) => ({ ...s, archived: true })));
     setPoker(baseCapital.poker); setSports(baseCapital.sports);
     setHabits({ meditar: false, agua: false, omega: false, ejercicio: false });
@@ -663,8 +691,7 @@ export default function App() {
   const worstSession  = useMemo(() => pokerAmounts.length ? Math.min(...pokerAmounts) : 0, [pokerAmounts]);
   const avgSession    = useMemo(() => pokerAmounts.length ? pokerAmounts.reduce((a, b) => a + b, 0) / pokerAmounts.length : 0, [pokerAmounts]);
 
-  const nowMemo       = useMemo(() => new Date(), []);
-  const monthStr      = useMemo(() => nowMemo.toLocaleDateString("es-MX", { month: "short" }), [nowMemo]);
+  const monthStr = getMonthStr();
   const thisMonthSessions = useMemo(() => pokerSessions.filter((s) => s.date.includes(monthStr)), [pokerSessions, monthStr]);
   const thisMonthProfit   = useMemo(() => thisMonthSessions.reduce((a, s) => a + s.amount, 0), [thisMonthSessions]);
 
@@ -762,39 +789,39 @@ export default function App() {
   // ── Sports 5% computed in MXN ─────────────────────────────────────────────
   const sports5pct = useMemo(() => parseFloat((sports * 0.05).toFixed(0)), [sports]);
 
-  // ─── STYLE HELPERS ───────────────────────────────────────────────────────
+  // ─── STYLE HELPERS (Limpiados de useCallback innecesario) ──────────────────
 
-  const inputStyle = useMemo(() => ({
+  const inputStyle = {
     ...INPUT_STYLE_BASE,
     border: `1px solid ${C.border}`,
     background: C.surface,
     color: C.text,
-  }), [C.border, C.surface, C.text]);
+  };
 
-  const pill = useCallback((on, color) => ({
+  const getPillStyle = (on, color) => ({
     padding: "8px 14px", borderRadius: 20,
     border: `1px solid ${on ? color : C.border}`,
     background: on ? color + "22" : "transparent",
     color: on ? color : C.muted,
     fontSize: 12, cursor: "pointer",
     fontFamily: "Georgia, serif", transition: "all 0.2s",
-  }), [C.border, C.muted]);
+  });
 
-  const typeBtn = useCallback((v) => ({
+  const getTypeBtnStyle = (v) => ({
     flex: 1, padding: "10px 4px", borderRadius: 8,
     border: `1px solid ${form.type === v ? C.accent + "88" : C.border}`,
     cursor: "pointer",
     background: form.type === v ? C.accentDim : C.surface,
     color: form.type === v ? C.accent : C.muted,
     fontFamily: "Georgia, serif", fontSize: 11, transition: "all 0.2s",
-  }), [form.type, C.accent, C.border, C.accentDim, C.surface, C.muted]);
+  });
 
-  const resBtn = useCallback((v) => ({
+  const getResBtnStyle = (v) => ({
     flex: 1, padding: 13, borderRadius: 8, border: "none", cursor: "pointer",
     background: form.result === v ? (v === "win" ? C.greenD : C.redD) : C.surface,
     color: form.result === v ? (v === "win" ? C.green : C.red) : C.muted,
     fontFamily: "Georgia, serif", fontSize: 13, transition: "all 0.2s",
-  }), [form.result, C.greenD, C.redD, C.surface, C.green, C.red, C.muted]);
+  });
 
   // ─── LOGIN SCREEN ────────────────────────────────────────────────────────
 
@@ -814,7 +841,7 @@ export default function App() {
             </button>
           </form>
           <div style={{ textAlign: "center", marginTop: 18 }}>
-            <button onClick={() => setIsLogin(!isLogin)} style={{ background: "none", border: "none", color: C.muted, fontSize: 12, cursor: "pointer", textDecoration: "underline" }}>
+            <button type="button" onClick={() => setIsLogin(!isLogin)} style={{ background: "none", border: "none", color: C.muted, fontSize: 12, cursor: "pointer", textDecoration: "underline" }}>
               {isLogin ? "¿Sin cuenta? Regístrate" : "Ya tengo cuenta"}
             </button>
           </div>
@@ -1027,7 +1054,7 @@ export default function App() {
             <div style={{ fontSize: 8, letterSpacing: 3, color: C.muted, textTransform: "uppercase", marginBottom: 10 }}>Hábitos de hoy</div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 16 }}>
               {[{ k: "meditar", l: "🧘 Meditar" }, { k: "agua", l: "💧 Agua" }, { k: "omega", l: "🐟 Omega-3" }, { k: "ejercicio", l: "🏃 Ejercicio" }].map((h) => (
-                <button key={h.k} onClick={() => toggleHabit(h.k)} style={pill(habits[h.k], C.accent)}>
+                <button key={h.k} onClick={() => toggleHabit(h.k)} style={getPillStyle(habits[h.k], C.accent)}>
                   {habits[h.k] ? "✓ " : ""}{h.l}
                 </button>
               ))}
@@ -1044,7 +1071,7 @@ export default function App() {
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                 {TILT_QS.map((q) => (
-                  <button key={q.id} onClick={() => toggleTilt(q.id)} style={pill(tilt[q.id], tiltColor)}>
+                  <button key={q.id} onClick={() => toggleTilt(q.id)} style={getPillStyle(tilt[q.id], tiltColor)}>
                     {tilt[q.id] ? "✓ " : ""}{q.icon} {q.label}
                   </button>
                 ))}
@@ -1108,13 +1135,13 @@ export default function App() {
 
             <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
               {[["cash", "Cash NL2"], ["tournament", "Torneo"], ["sports", "Depor"]].map(([v, l]) => (
-                <button key={v} onClick={() => setForm({ ...form, type: v })} style={typeBtn(v)}>{l}</button>
+                <button key={v} onClick={() => setForm({ ...form, type: v })} style={getTypeBtnStyle(v)}>{l}</button>
               ))}
             </div>
 
             <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-              <button onClick={() => setForm({ ...form, result: "win" })}  style={resBtn("win")}>▲ Ganancia</button>
-              <button onClick={() => setForm({ ...form, result: "loss" })} style={resBtn("loss")}>▼ Pérdida</button>
+              <button onClick={() => setForm({ ...form, result: "win" })}  style={getResBtnStyle("win")}>▲ Ganancia</button>
+              <button onClick={() => setForm({ ...form, result: "loss" })} style={getResBtnStyle("loss")}>▼ Pérdida</button>
             </div>
 
             {/* Sports 5% recommendation */}
@@ -1191,7 +1218,7 @@ export default function App() {
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
                 {[
-                  { label: "Profit total",        value: `${sgn(pokerProfit)}$${fmt(Math.abs(pokerProfit))}`,       color: pokerProfit  >= 0 ? C.green : C.red },
+                  { label: "Profit total",        value: `${sgn(pokerProfit)}$${fmt(Math.abs(pokerProfit))}`,        color: pokerProfit  >= 0 ? C.green : C.red },
                   { label: `Este mes (${monthStr})`, value: `${sgn(thisMonthProfit)}$${fmt(Math.abs(thisMonthProfit))}`, color: thisMonthProfit >= 0 ? C.green : C.red },
                   { label: "Mejor sesión",         value: `+$${fmt(bestSession)}`,  color: C.green },
                   { label: "Peor sesión",          value: `$${fmt(worstSession)}`,  color: C.red   },
@@ -1323,7 +1350,7 @@ export default function App() {
                       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
                         {[
                           { l: "ROI",            v: `${sgn(tournamentROI.roi)}${fmt(Math.abs(tournamentROI.roi), 1)}%`, c: tournamentROI.roi  >= 0 ? C.green : C.red },
-                          { l: "ITM %",          v: `${fmt(tournamentROI.itm, 1)}%`,                                   c: tournamentROI.itm  >= 33 ? C.green : C.gold },
+                          { l: "ITM %",          v: `${fmt(tournamentROI.itm, 1)}%`,                                    c: tournamentROI.itm  >= 33 ? C.green : C.gold },
                           { l: "Total torneos",  v: tournamentROI.total,                                                c: C.text  },
                           { l: "Profit neto",    v: `${sgn(tournamentROI.profit)}$${fmt(Math.abs(tournamentROI.profit))}`, c: tournamentROI.profit >= 0 ? C.green : C.red },
                         ].map((m) => (
