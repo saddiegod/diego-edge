@@ -295,7 +295,7 @@ export default function App() {
   const [sports,       setSports]       = useState(500);
   const [habits,       setHabits]       = useState({ meditar: false, agua: false, omega: false, ejercicio: false });
   const [tilt,         setTilt]         = useState({});
-  const [form,         setForm]         = useState({ type: "cash", result: "win", amount: "", note: "", rating: 0 });
+  const [form,         setForm]         = useState({ type: "cash", result: "win", amount: "", note: "", rating: 0, durationMins: "" });
   const [leakForm,     setLeakForm]     = useState({ position: "BTN", note: "" });
   const [rulesOpen,    setRulesOpen]    = useState(null);
   const [loaded,       setLoaded]       = useState(false);
@@ -316,7 +316,7 @@ export default function App() {
   const [showPreSession,  setShowPreSession]  = useState(false);
   const [preSessionNote,  setPreSessionNote]  = useState("");
   const [analyticsView,   setAnalyticsView]   = useState("general"); 
-  const [leaksView,       setLeaksView]       = useState("registry"); // registry | gto
+  const [leaksView,       setLeaksView]       = useState("registry"); 
 
   const timerElapsedRef   = useRef(0);
   const preSessionNoteRef = useRef("");
@@ -350,12 +350,21 @@ export default function App() {
     setTimerActive(false); setTimerElapsed(0); setTimerStart(null); setPreSessionNote("");
   }, []);
 
-  // NUEVO: Detiene el contador y te manda a registrar
   const stopAndRegister = useCallback((e) => {
     if(e) e.preventDefault();
-    if(timerActive) setTimerActive(false); // Pausa el timer
-    setTab("reg"); // Lleva a la pestaña de registro
-    setForm(prev => ({ ...prev, type: "cash", amount: "", note: preSessionNoteRef.current ? `Foco: ${preSessionNoteRef.current}` : "" }));
+    if(timerActive) setTimerActive(false); 
+    setTab("reg"); 
+    
+    // Convertir los ms actuales del timer a minutos redondeados
+    const elapsedMins = Math.floor(timerElapsedRef.current / 60000);
+    
+    setForm(prev => ({ 
+      ...prev, 
+      type: "cash", 
+      amount: "", 
+      note: preSessionNoteRef.current ? `Foco: ${preSessionNoteRef.current}` : "",
+      durationMins: elapsedMins > 0 ? String(elapsedMins) : ""
+    }));
   }, [timerActive]);
 
   // ── Auth & Load Logic ─────────────────────────────────────────────────────
@@ -489,11 +498,15 @@ export default function App() {
     if(e) e.preventDefault();
     const amt = parseFloat(form.amount); if (!amt || amt <= 0) return;
     const value = form.result === "win" ? amt : -amt;
+    
+    // Toma la duración escrita manualmente en el form y la convierte a milisegundos para guardarla
+    const finalDurationMs = form.durationMins ? parseInt(form.durationMins, 10) * 60000 : 0;
+
     const payload = {
       id: Date.now(), 
       user_id: session.user.id, type: form.type, amount: value, note: form.note,
       date: getTodayStr(), archived: false, rating: form.rating || 0,
-      duration: timerElapsedRef.current || 0, pre_note: preSessionNoteRef.current || "",
+      duration: finalDurationMs, pre_note: preSessionNoteRef.current || "",
     };
     
     const { data, error } = await supabase.from("sessions").insert([payload]).select();
@@ -504,13 +517,12 @@ export default function App() {
       if (form.type === "sports") setSports((p) => parseFloat((p + value).toFixed(2)));
       else                        setPoker((p)  => parseFloat((p + value).toFixed(2)));
       
-      setForm((f) => ({ ...f, amount: "", note: "", rating: 0 }));
+      setForm((f) => ({ ...f, amount: "", note: "", rating: 0, durationMins: "" }));
       setFlash(value > 0 ? "win" : "loss"); 
       setTimeout(() => setFlash(null), 900); 
       setTab("dash");
       
-      // Resetea el timer a 0 ahora que ya se guardó la duración
-      resetTimer();
+      resetTimer(); // Limpia el cronómetro superior visualmente
 
       if (form.type === "cash" && value <= -6) sendAlert("⚠️ STOP LOSS", "3 buy-ins perdidos. Cierra la mesa.");
       if (form.type === "cash" && value >= 10)  sendAlert("🏆 Buena sesión", "Protege las ganancias.");
@@ -674,6 +686,7 @@ export default function App() {
     return { total, wins, invested, profit: parseFloat(profit.toFixed(2)), roi: invested > 0 ? (profit / invested) * 100 : 0, itm: (wins / total) * 100 };
   }, [tournamentSessions]);
 
+  // Modificado a 80 manos estimadas por hora
   const sessionsWithDuration = useMemo(() => pokerSessions.filter((s) => s.duration && s.duration > 60000), [pokerSessions]);
   const avgPerHour = useMemo(() => {
     if (!sessionsWithDuration.length) return null;
@@ -682,7 +695,7 @@ export default function App() {
     return totalHours > 0 ? totalProfit / totalHours : null;
   }, [sessionsWithDuration]);
   
-  const bb100 = useMemo(() => { if (avgPerHour === null) return null; return ((avgPerHour / 25) / 0.02) * 100; }, [avgPerHour]);
+  const bb100 = useMemo(() => { if (avgPerHour === null) return null; return ((avgPerHour / 80) / 0.02) * 100; }, [avgPerHour]);
 
   const weeklyStats = useMemo(() => ({ sessions: pokerSessions.length, profit: pokerProfit, winRate: pokerSessions.length ? Math.round((pokerWins / pokerSessions.length) * 100) : 0, leaks: leakSessions.length, best: bestSession }), [pokerSessions, pokerProfit, pokerWins, leakSessions, bestSession]);
   const sports5pct = useMemo(() => parseFloat((sports * 0.05).toFixed(0)), [sports]);
@@ -726,7 +739,6 @@ export default function App() {
     fontSize: 12, fontWeight: "600", color: C.muted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 16, fontFamily: fontClean
   };
 
-  // Estado para la sub-pestaña de Leaks (Registro vs Tabla GTO)
   const [gtoDepth, setGtoDepth] = useState("100bb");
 
   // ─── LOGIN SCREEN ────────────────────────────────────────────────────────
@@ -766,6 +778,39 @@ export default function App() {
     <div style={{ fontFamily: fontClean, background: C.bg, minHeight: "100vh", color: C.text, paddingBottom: 90 }}>
 
       {flash && <div style={{ position: "fixed", inset: 0, background: flash === "win" ? "rgba(16,185,129,0.08)" : "rgba(239,68,68,0.08)", pointerEvents: "none", zIndex: 999 }} />}
+
+      {/* ── Pre-session modal ── */}
+      {showPreSession && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 20, padding: 24, maxWidth: 340, width: "100%" }}>
+            <div style={{ fontSize: 9, letterSpacing: 4, color: C.accent, textTransform: "uppercase", marginBottom: 6 }}>Antes de jugar</div>
+            <div style={{ fontSize: 17, fontWeight: "bold", color: C.text, marginBottom: 16 }}>¿Cuál es tu foco hoy? 🎯</div>
+            <textarea
+              autoFocus
+              placeholder="Ej: No pagar 3bets OOP, fold más en BB vs steal..."
+              value={preSessionNote}
+              onChange={(e) => setPreSessionNote(e.target.value)}
+              style={{ ...inputStyle, fontSize: 13, minHeight: 80, resize: "none", lineHeight: 1.6, marginBottom: 14 }}
+            />
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <button type="button" onClick={() => startTimerActual(preSessionNote)}
+                style={{ width: "100%", padding: 13, borderRadius: 10, border: "none", background: C.accentDim, color: C.accent, fontSize: 13, fontWeight: "bold", cursor: "pointer" }}>
+                ▶ Iniciar sesión con foco
+              </button>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button type="button" onClick={() => startTimerActual("")}
+                  style={{ flex: 1, padding: "12px 16px", borderRadius: 10, border: `1px solid ${C.border}`, background: "transparent", color: C.muted, fontSize: 12, cursor: "pointer" }}>
+                  Omitir y empezar
+                </button>
+                <button type="button" onClick={() => { setShowPreSession(false); setPreSessionNote(""); }}
+                  style={{ flex: 1, padding: "12px 16px", borderRadius: 10, border: `1px solid ${C.border}`, background: "transparent", color: C.muted, fontSize: 12, cursor: "pointer" }}>
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── HEADER ─────────────────────────────────────────────────────── */}
       <div style={{ background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "20px 24px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -857,7 +902,7 @@ export default function App() {
             </div>
           )}
 
-          {/* Timer Card (CON BOTÓN DE FINALIZAR Y REGISTRAR) */}
+          {/* Timer Card */}
           <div style={{ ...cardStyle, border: `1px solid ${timerActive ? C.accentMid : C.border}` }}>
             <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: timerElapsed > 0 ? 16 : 0 }}>
               <div style={{ flex: 1 }}>
@@ -876,7 +921,6 @@ export default function App() {
               </div>
             </div>
             
-            {/* BOTÓN NUEVO PARA FINALIZAR SESIÓN */}
             {timerElapsed > 0 && (
               <button type="button" onClick={stopAndRegister} 
                 style={{ width: "100%", padding: "14px", borderRadius: 10, border: `1px solid ${C.accent}`, background: C.accentDim, color: C.accent, fontSize: 14, cursor: "pointer", fontWeight: "bold", letterSpacing: 1 }}>
@@ -990,13 +1034,6 @@ export default function App() {
               </div>
             )}
 
-            {/* Aviso de que se usará el tiempo del cronómetro */}
-            {timerElapsedRef.current > 0 && form.type !== "sports" && (
-              <div style={{ padding: "10px 14px", background: C.accentDim, border: `1px solid ${C.accent}44`, borderRadius: 10, marginBottom: 16, fontSize: 13, color: C.accent, fontWeight: "500" }}>
-                ⏱ Se asociará un tiempo de <strong>{fmtElapsed(timerElapsedRef.current)}</strong> a este registro para calcular tu Rentabilidad por Hora (BB/100).
-              </div>
-            )}
-
             <div style={{ fontSize: 11, fontWeight: "600", color: C.muted, textTransform: "uppercase", marginBottom: 8 }}>Acceso rápido</div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 20 }}>
               {(form.type === "sports" ? QUICK_SPORTS : QUICK_POKER).map((q) => (
@@ -1007,11 +1044,22 @@ export default function App() {
               ))}
             </div>
 
-            <input type="number" min="0" step="0.01"
-              placeholder={form.type === "sports" ? "Monto en MXN" : "Monto en USD"}
-              value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })}
-              style={{ ...inputStyle, fontSize: 18, fontFamily: fontClassic, marginBottom: 16 }}
-            />
+            <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+              <input type="number" min="0" step="0.01"
+                placeholder={form.type === "sports" ? "Monto en MXN" : "Monto en USD"}
+                value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })}
+                style={{ ...inputStyle, fontSize: 18, fontFamily: fontClassic, flex: 2 }}
+              />
+              {/* CAMPO DE MINUTOS PARA REGISTRO MANUAL/AUTOMÁTICO */}
+              {form.type !== "sports" && (
+                <input type="number" min="0" step="1"
+                  placeholder="Minutos jugados"
+                  value={form.durationMins} onChange={(e) => setForm({ ...form, durationMins: e.target.value })}
+                  style={{ ...inputStyle, fontSize: 14, flex: 1 }}
+                />
+              )}
+            </div>
+
             <input type="text" placeholder="Nota — ej: 'AA vs KK, board seco'"
               value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })}
               style={{ ...inputStyle, marginBottom: 20 }}
@@ -1095,7 +1143,7 @@ export default function App() {
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
                     {[
                       { label: "$/hora",           value: avgPerHour !== null ? `${sgn(avgPerHour)}$${fmt(Math.abs(avgPerHour), 2)}` : "—", c: avgPerHour !== null && avgPerHour >= 0 ? C.green : C.red },
-                      { label: "BB/100 (NL2)",     value: bb100 !== null ? `${sgn(bb100)}${fmt(Math.abs(bb100), 1)}` : "—", c: bb100 !== null && bb100 >= 0 ? C.green : C.red },
+                      { label: "BB/100 (est. 80 manos/hr)", value: bb100 !== null ? `${sgn(bb100)}${fmt(Math.abs(bb100), 1)}` : "—", c: bb100 !== null && bb100 >= 0 ? C.green : C.red },
                       { label: "Ses. con timer",   value: sessionsWithDuration.length, c: C.accent },
                     ].map((x) => (
                       <div key={x.label} style={{ textAlign: "center" }}>
@@ -1331,9 +1379,9 @@ export default function App() {
                 <div style={{ padding: "20px 20px 10px" }}>
                   <div style={{ ...sectionLabelStyle, color: C.accent, marginBottom: 16 }}>Rangos RFI y Push/Fold preflop</div>
                   <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-                    <button type="button" onClick={() => setGtoDepth("100bb")} style={{ flex: 1, padding: "10px 4px", borderRadius: 8, border: `1px solid ${gtoDepth === "100bb" ? C.accent : C.border}`, background: gtoDepth === "100bb" ? C.accentDim : C.surface, color: gtoDepth === "100bb" ? C.accent : C.muted, fontSize: 12, fontWeight: "bold" }}>100BB (Cash)</button>
-                    <button type="button" onClick={() => setGtoDepth("40bb")} style={{ flex: 1, padding: "10px 4px", borderRadius: 8, border: `1px solid ${gtoDepth === "40bb" ? C.accent : C.border}`, background: gtoDepth === "40bb" ? C.accentDim : C.surface, color: gtoDepth === "40bb" ? C.accent : C.muted, fontSize: 12, fontWeight: "bold" }}>40-50BB</button>
-                    <button type="button" onClick={() => setGtoDepth("20bb")} style={{ flex: 1, padding: "10px 4px", borderRadius: 8, border: `1px solid ${gtoDepth === "20bb" ? C.accent : C.border}`, background: gtoDepth === "20bb" ? C.accentDim : C.surface, color: gtoDepth === "20bb" ? C.accent : C.muted, fontSize: 12, fontWeight: "bold" }}>15-20BB</button>
+                    <button type="button" onClick={() => setGtoDepth("100bb")} style={{ flex: 1, padding: "10px 4px", borderRadius: 8, border: `1px solid ${gtoDepth === "100bb" ? C.accent : C.border}`, background: gtoDepth === "100bb" ? C.accentDim : C.surface, color: gtoDepth === "100bb" ? C.accent : C.muted, fontSize: 12, fontWeight: "bold", cursor: "pointer" }}>100BB (Cash)</button>
+                    <button type="button" onClick={() => setGtoDepth("40bb")} style={{ flex: 1, padding: "10px 4px", borderRadius: 8, border: `1px solid ${gtoDepth === "40bb" ? C.accent : C.border}`, background: gtoDepth === "40bb" ? C.accentDim : C.surface, color: gtoDepth === "40bb" ? C.accent : C.muted, fontSize: 12, fontWeight: "bold", cursor: "pointer" }}>40-50BB</button>
+                    <button type="button" onClick={() => setGtoDepth("20bb")} style={{ flex: 1, padding: "10px 4px", borderRadius: 8, border: `1px solid ${gtoDepth === "20bb" ? C.accent : C.border}`, background: gtoDepth === "20bb" ? C.accentDim : C.surface, color: gtoDepth === "20bb" ? C.accent : C.muted, fontSize: 12, fontWeight: "bold", cursor: "pointer" }}>15-20BB</button>
                   </div>
                 </div>
                 
