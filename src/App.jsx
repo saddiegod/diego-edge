@@ -1,37 +1,67 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { supabase } from "./supabase";
 
+// ─── SONIDOS NATIVOS (Web Audio API) ────────────────────────────────────────
+let audioCtx = null;
+const playSound = (type) => {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    
+    const now = audioCtx.currentTime;
+    if (type === 'click') {
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(600, now);
+      osc.frequency.exponentialRampToValueAtTime(300, now + 0.05);
+      gain.gain.setValueAtTime(0.05, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+      osc.start(now);
+      osc.stop(now + 0.05);
+    } else if (type === 'success') {
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(400, now);
+      osc.frequency.setValueAtTime(600, now + 0.1);
+      gain.gain.setValueAtTime(0.05, now);
+      gain.gain.linearRampToValueAtTime(0, now + 0.2);
+      osc.start(now);
+      osc.stop(now + 0.2);
+    } else if (type === 'error') {
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(150, now);
+      gain.gain.setValueAtTime(0.05, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+      osc.start(now);
+      osc.stop(now + 0.2);
+    }
+  } catch(e) {} // Ignorar si el navegador bloquea el audio
+};
+
 // ─── CONSTANTS ──────────────────────────────────────────────────────────────
 
 const RULES = {
   cash: [
     "Stop-loss por sesión: máximo 3 buyins ($6 USD)",
     "Si el bankroll baja a $30, paras la semana",
-    "Si el bankroll baja a $25, dejas de jugar hasta recargar",
     "Máximo 2 horas por sesión en un solo bloque",
-    "No jugar con menos de 6 horas de sueño",
     "Stop-loss emocional: si sientes tilt, cierra inmediatamente",
   ],
   tournament: [
     "Máximo 5% del bankroll por torneo ($2.50 con $50)",
     "Máximo 3 torneos al día",
-    "No re-entry si ya perdiste 2 torneos en el día",
-    "Registra resultado antes de abrir otro torneo",
     "Si pierdes 5 seguidos, pausa 24h",
   ],
   sports: [
     "Máximo 5% del bankroll por apuesta",
     "Solo mercados donde tengas criterio real",
-    "No apuestas en vivo si llevas sesión perdedora",
-    "Máximo 2 apuestas activas simultáneas",
     "No apostar para recuperar pérdidas del día",
   ],
   casino: [
-    "BLACKJACK — PROHIBIDO",
-    "BACCARAT — PROHIBIDO",
-    "RULETA — PROHIBIDO",
-    "SLOTS — PROHIBIDO",
-    "Regla absoluta. Sin excepciones.",
+    "PROHIBIDO ABSOLUTO. Sin excepciones.",
   ],
 };
 
@@ -51,28 +81,26 @@ const TILT_QS = [
 
 const POSITIONS = ["UTG", "MP", "HJ", "CO", "BTN", "SB", "BB", "General"];
 
-// Tablas GTO para la sección de estudio rápido
+// Tablas GTO expandidas
 const GTO_TABLES = {
-  "100bb": [
+  "100bb_cash": [
     { pos: "UTG", range: "77+, ATs+, KJs+, QJs, JTs, AQo+", notes: "10% RFI. Muy tight. Foldear AQo a 3bets." },
     { pos: "MP", range: "55+, A8s+, KTs+, QTs+, JTs, T9s, AJo+, KQo", notes: "15% RFI. Empezar a abrir conectores suited fuertes." },
     { pos: "CO", range: "22+, A2s+, K8s+, Q9s+, J9s+, T9s, 98s, 87s, ATo+, KJo+", notes: "25% RFI. Rango de robo medio. Atacar ciegas tight." },
     { pos: "BTN", range: "22+, A2s+, K2s+, Q5s+, J7s+, T7s+, 97s+, 87s, 76s, A2o+, K8o+, Q9o+, J9o+", notes: "45% RFI. Máxima agresión, ventaja de posición absoluta." },
     { pos: "SB", range: "22+, A2s+, K2s+, Q7s+, J8s+, T8s+, 98s, A2o+, KTo+, QTo+, JTo", notes: "40% RFI. Abrir o 3bet, evitar pagar pasivo fuera de posición." },
   ],
-  "40bb": [
+  "40bb_mtt": [
     { pos: "UTG", range: "66+, ATs+, KJs+, QJs, JTs, AQo+", notes: "12% RFI. Cuidado con set mining (poca implícita)." },
     { pos: "MP", range: "44+, A7s+, KTs+, QTs+, JTs, T9s, ATo+, KQo", notes: "17% RFI. Priorizar cartas altas sobre conectores suited." },
     { pos: "CO", range: "22+, A2s+, K7s+, Q9s+, J9s+, T9s, ATo+, KTo+", notes: "27% RFI. Cuidado con los resteals (3bet push)." },
     { pos: "BTN", range: "22+, A2s+, K2s+, Q2s+, J7s+, T7s+, 97s+, A2o+, K8o+, Q9o+", notes: "48% RFI. Abrir pequeño (2x-2.2x) para atacar ciegas." },
-    { pos: "SB", range: "Top 45% (Equilibrado)", notes: "Estrategia mixta: Limp con manos medias, Raise con premium/basura." },
   ],
-  "20bb": [
+  "20bb_mtt": [
     { pos: "UTG", range: "22+, A9s+, KTs+, QJs, AJo+", notes: "Zona de Push/Fold o Min-Raise muy polarizado." },
     { pos: "MP", range: "22+, A7s+, K9s+, QTs+, JTs, ATo+, KQo", notes: "Push directo con pares bajos y Ases medios suited." },
     { pos: "CO", range: "22+, A2s+, K7s+, Q9s+, J9s+, T9s, A8o+, KTo+, QJo", notes: "Mucha presión a ciegas débiles. Push agresivo." },
     { pos: "BTN", range: "22+, A2s+, K2s+, Q2s+, J7s+, T7s+, 97s+, A2o+, K8o+, Q9o+", notes: "Rango de Resteal / Push amplísimo vs aperturas previas." },
-    { pos: "SB", range: "Cualquier As, Cualquier Rey, Q2s+, J5s+, T6s+, 85s+, 22+", notes: "Empujar (All-In) a la BB casi con medio mazo si foldean todos." },
   ]
 };
 
@@ -118,22 +146,10 @@ const getMonthStr = () => new Date().toLocaleDateString("es-MX", { month: "short
 // ─── COLOR SYSTEM ────────────────────────────────────────────────────────────
 
 const makeC = (accent = "#3b82f6") => ({
-  bg: "#0d1117",
-  surface: "#161b22",
-  card: "#1e242e",
-  border: "#30363d",
-  green: "#10b981",
-  greenD: "#065f46", 
-  red: "#ef4444",
-  redD: "#7f1d1d",
-  accent, 
-  accentDim: accent + "25",
-  accentMid: accent + "50",
-  gold: "#f59e0b",
-  goldD: "#78350f",
-  muted: "#8b949e",
-  text: "#f0f6fc",
-  textDim: "#c9d1d9",
+  bg: "#0d1117", surface: "#161b22", card: "#1e242e", border: "#30363d",
+  green: "#10b981", greenD: "#065f46", red: "#ef4444", redD: "#7f1d1d",
+  accent, accentDim: accent + "25", accentMid: accent + "50",
+  gold: "#f59e0b", goldD: "#78350f", muted: "#8b949e", text: "#f0f6fc", textDim: "#c9d1d9",
 });
 
 const fontClassic = "'Georgia', serif";
@@ -141,8 +157,7 @@ const fontClean   = "system-ui, -apple-system, sans-serif";
 
 const INPUT_STYLE_BASE = {
   width: "100%", padding: "14px 16px", borderRadius: 10,
-  fontSize: 15, fontFamily: fontClean,
-  boxSizing: "border-box", outline: "none",
+  fontSize: 15, fontFamily: fontClean, boxSizing: "border-box", outline: "none",
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -152,9 +167,8 @@ const INPUT_STYLE_BASE = {
 const StarRating = ({ value, onChange, C }) => (
   <div style={{ display: "flex", gap: 6 }}>
     {[1, 2, 3, 4, 5].map((n) => (
-      <button key={n} type="button" onClick={(e) => { e.preventDefault(); onChange(n === value ? 0 : n); }}
-        style={{ background: "none", border: "none", cursor: "pointer", fontSize: 26,
-          color: n <= value ? C.gold : C.border, padding: "0", lineHeight: 1 }}>
+      <button key={n} type="button" onClick={(e) => { e.preventDefault(); playSound('click'); onChange(n === value ? 0 : n); }}
+        style={{ background: "none", border: "none", cursor: "pointer", fontSize: 26, color: n <= value ? C.gold : C.border, padding: "0", lineHeight: 1 }}>
         ★
       </button>
     ))}
@@ -199,23 +213,10 @@ const HeatmapCalendar = ({ sessions, monthStr, C }) => {
         ))}
         {cells.map((day, i) => (
           <div key={i} style={{
-            aspectRatio: "1", borderRadius: 6,
-            background: day ? getColor(day) : "transparent",
-            border: day === today ? `2px solid ${C.accent}` : "none",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: 11, color: day ? (profitByDay[day] !== undefined ? "#fff" : C.textDim) : "transparent",
-            fontWeight: day === today ? "bold" : "normal",
-            fontFamily: fontClean
-          }}>
-            {day || ""}
-          </div>
-        ))}
-      </div>
-      <div style={{ display: "flex", gap: 12, marginTop: 12, justifyContent: "flex-end" }}>
-        {[["Pérdida", C.red], ["Ganancia", C.green]].map(([l, col]) => (
-          <div key={l} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: C.muted }}>
-            <div style={{ width: 12, height: 12, borderRadius: 3, background: col }} />{l}
-          </div>
+            aspectRatio: "1", borderRadius: 6, background: day ? getColor(day) : "transparent", border: day === today ? `2px solid ${C.accent}` : "none",
+            display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: day ? (profitByDay[day] !== undefined ? "#fff" : C.textDim) : "transparent",
+            fontWeight: day === today ? "bold" : "normal", fontFamily: fontClean
+          }}>{day || ""}</div>
         ))}
       </div>
     </div>
@@ -228,9 +229,7 @@ const Sparkline = ({ data, color, id, W = 120, H = 36 }) => {
   const mn = Math.min(...data) - 0.5;
   const mx = Math.max(...data) + 0.5;
   const range = mx - mn || 1;
-  const pts = data.map((v, i) =>
-    `${(i / (data.length - 1)) * W},${H - ((v - mn) / range) * (H - 2) + 1}`
-  ).join(" ");
+  const pts = data.map((v, i) => `${(i / (data.length - 1)) * W},${H - ((v - mn) / range) * (H - 2) + 1}`).join(" ");
   return (
     <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: H, display: "block", marginTop: 8 }}>
       <defs>
@@ -245,33 +244,92 @@ const Sparkline = ({ data, color, id, W = 120, H = 36 }) => {
 };
 
 const BarChart = ({ data, C }) => {
-  if (!data || data.length === 0)
-    return <div style={{ textAlign: "center", color: C.muted, padding: 24, fontSize: 13 }}>Sin datos suficientes</div>;
+  if (!data || data.length === 0) return <div style={{ textAlign: "center", color: C.muted, padding: 24, fontSize: 13 }}>Sin datos suficientes</div>;
   const values = data.map((d) => d.value);
   const maxAbs = Math.max(...values.map(Math.abs), 0.1);
   const barH = 80;
   return (
     <div style={{ display: "flex", alignItems: "flex-end", gap: 6, height: barH + 40, padding: "0 4px" }}>
       {data.map((d, i) => {
-        const pct   = Math.abs(d.value) / maxAbs;
-        const isPos = d.value >= 0;
-        const h     = Math.max(pct * barH, 4);
+        const pct = Math.abs(d.value) / maxAbs; const isPos = d.value >= 0; const h = Math.max(pct * barH, 4);
         return (
           <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: barH + 40 }}>
             <div style={{ fontSize: 11, color: isPos ? C.green : C.red, marginBottom: 5, fontWeight: "600", fontFamily: fontClean }}>
               {d.value !== 0 ? `${sgn(d.value)}${fmt(Math.abs(d.value), 0)}` : "—"}
             </div>
-            <div style={{
-              width: "100%", height: h, maxWidth: 24,
-              background: isPos ? C.green : C.red,
-              opacity: 0.85,
-              borderRadius: isPos ? "6px 6px 0 0" : "0 0 6px 6px",
-              transition: "height 0.4s ease",
-            }} />
+            <div style={{ width: "100%", height: h, maxWidth: 24, background: isPos ? C.green : C.red, opacity: 0.85, borderRadius: isPos ? "6px 6px 0 0" : "0 0 6px 6px" }} />
             <div style={{ fontSize: 10, color: C.muted, marginTop: 8, textAlign: "center", fontFamily: fontClean }}>{d.label}</div>
           </div>
         );
       })}
+    </div>
+  );
+};
+
+// ─── MATRIZ GTO 13x13 ────────────────────────────────────────────────────────
+const RANKS = ['A','K','Q','J','T','9','8','7','6','5','4','3','2'];
+const getRankVal = r => RANKS.length - RANKS.indexOf(r);
+
+const parseGTOString = (str) => {
+  const hands = new Set();
+  if(!str || str.includes("Mix")) return hands;
+  str.split(',').forEach(p => {
+    const part = p.trim();
+    if (part.endsWith('+')) {
+      const base = part.slice(0, -1);
+      if (base.length === 2 && base[0] === base[1]) {
+        let val = getRankVal(base[0]);
+        for(let i=val; i<=13; i++) hands.add(RANKS[13-i]+RANKS[13-i]);
+      } else if (base.length === 3) {
+        let r1 = getRankVal(base[0]);
+        let r2 = getRankVal(base[1]);
+        let suffix = base[2];
+        for(let i=r2; i<r1; i++) hands.add(base[0]+RANKS[13-i]+suffix);
+      }
+    } else { hands.add(part); }
+  });
+  return hands;
+};
+
+const GTOMatrix = ({ rangeStr, C }) => {
+  const activeHands = useMemo(() => parseGTOString(rangeStr), [rangeStr]);
+  
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(13, 1fr)', gap: 2, background: C.border, padding: 2, borderRadius: 8, marginTop: 12 }}>
+      {RANKS.map((r1, row) => 
+        RANKS.map((r2, col) => {
+          let hand;
+          let isPair = row === col;
+          let isSuited = row < col; 
+          
+          if (isPair) hand = r1+r2;
+          else if (isSuited) hand = r1+r2+'s';
+          else hand = r2+r1+'o'; 
+          
+          const isActive = activeHands.has(hand) || rangeStr.includes("Mix");
+          
+          let bg = C.surface;
+          let color = C.textDim;
+          let border = "none";
+          
+          if (isActive) {
+            color = "#fff";
+            if (isPair) { bg = C.greenD; border = `1px solid ${C.green}`; }
+            else if (isSuited) { bg = "#0284c7"; border = "1px solid #38bdf8"; } // Azul para Suited
+            else { bg = C.goldD; border = `1px solid ${C.gold}`; } // Dorado para Offsuit
+          }
+
+          return (
+            <div key={hand} style={{ 
+              aspectRatio: "1", display: "flex", alignItems: "center", justifyContent: "center", 
+              fontSize: "clamp(8px, 2.5vw, 11px)", fontWeight: isActive ? "bold" : "normal",
+              background: bg, color: color, borderRadius: 3, border: border, fontFamily: fontClean
+            }}>
+              {hand}
+            </div>
+          );
+        })
+      )}
     </div>
   );
 };
@@ -317,6 +375,9 @@ export default function App() {
   const [preSessionNote,  setPreSessionNote]  = useState("");
   const [analyticsView,   setAnalyticsView]   = useState("general"); 
   const [leaksView,       setLeaksView]       = useState("registry"); 
+  
+  const [gtoDepth, setGtoDepth] = useState("100bb_cash");
+  const [gtoPosIdx, setGtoPosIdx] = useState(0);
 
   const timerElapsedRef   = useRef(0);
   const preSessionNoteRef = useRef("");
@@ -327,7 +388,7 @@ export default function App() {
   const active   = useMemo(() => sessions.filter((x) => !x.archived),  [sessions]);
   const archived = useMemo(() => sessions.filter((x) =>  x.archived),  [sessions]);
 
-  // ── Timer Logic ───────────────────────────────────────────────────────────
+  // ── Timer Logic
   useEffect(() => {
     if (!timerActive) return;
     const id = setInterval(() => setTimerElapsed(Date.now() - timerStart), 1000);
@@ -336,28 +397,30 @@ export default function App() {
 
   const toggleTimer = useCallback((e) => {
     if(e) e.preventDefault();
+    playSound('click');
     if (timerActive) setTimerActive(false);
     else if (timerElapsed > 0) { setTimerStart(Date.now() - timerElapsed); setTimerActive(true); }
     else setShowPreSession(true);
   }, [timerActive, timerElapsed]);
 
   const startTimerActual = useCallback((note) => {
+    playSound('click');
     setPreSessionNote(note); setTimerStart(Date.now()); setTimerActive(true); setShowPreSession(false);
   }, []);
 
   const resetTimer = useCallback((e) => {
     if(e) e.preventDefault();
+    playSound('click');
     setTimerActive(false); setTimerElapsed(0); setTimerStart(null); setPreSessionNote("");
   }, []);
 
   const stopAndRegister = useCallback((e) => {
     if(e) e.preventDefault();
+    playSound('success');
     if(timerActive) setTimerActive(false); 
     setTab("reg"); 
     
-    // Convertir los ms actuales del timer a minutos redondeados
     const elapsedMins = Math.floor(timerElapsedRef.current / 60000);
-    
     setForm(prev => ({ 
       ...prev, 
       type: "cash", 
@@ -367,7 +430,7 @@ export default function App() {
     }));
   }, [timerActive]);
 
-  // ── Auth & Load Logic ─────────────────────────────────────────────────────
+  // ── Auth & Load Logic
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
@@ -384,7 +447,8 @@ export default function App() {
 
   const handleLogout = useCallback(async (e) => { if(e) e.preventDefault(); await supabase.auth.signOut(); setSessions([]); setLoaded(false); }, []);
 
-  const sendAlert = useCallback(async (title, body) => {
+  const sendAlert = useCallback(async (title, body, type="error") => {
+    playSound(type);
     if ("serviceWorker" in navigator && Notification.permission === "granted") {
       try { const reg = await navigator.serviceWorker.ready; reg.showNotification(title, { body, icon: "/icon.png", vibrate: [200, 100, 200] }); } catch (e) {}
     }
@@ -392,9 +456,10 @@ export default function App() {
 
   const requestNotificationPermission = useCallback(async (e) => {
     if(e) e.preventDefault();
+    playSound('click');
     if (!("Notification" in window)) { alert("Tu navegador no soporta notificaciones."); return; }
     const perm = await Notification.requestPermission();
-    if (perm === "granted") { setPushStatus("Activas"); sendAlert("♠️ Diego's Edge", "Alertas activadas."); } else setPushStatus("Denegado");
+    if (perm === "granted") { setPushStatus("Activas"); sendAlert("♠️ Diego's Edge", "Alertas activadas.", "success"); } else setPushStatus("Denegado");
   }, [sendAlert]);
 
   const activeRef = useRef(active);
@@ -407,15 +472,15 @@ export default function App() {
       const today = now.toLocaleDateString("es-MX"); const todayString = getTodayStr();
       let noted = {}; try { noted = JSON.parse(localStorage.getItem(`bk_alerts_${today}`)) || {}; } catch {}
       
-      if (h === 10 && m === 0 && !noted.morning) { sendAlert("🌅 Buenos días", "Omega-3 y agua antes de la primera sesión."); noted.morning = true; }
-      if (h === 14 && m === 0 && !noted.afternoon) { sendAlert("🧠 Check-in", "¿Cómo va el tilt?"); noted.afternoon = true; }
-      if (h === 20 && m === 0 && !noted.evening) { sendAlert("📖 Hora de estudio", "Revisa Spots y Leaks."); noted.evening = true; }
+      if (h === 10 && m === 0 && !noted.morning) { sendAlert("🌅 Buenos días", "Omega-3 y agua antes de la primera sesión.", "click"); noted.morning = true; }
+      if (h === 14 && m === 0 && !noted.afternoon) { sendAlert("🧠 Check-in", "¿Cómo va el tilt?", "click"); noted.afternoon = true; }
+      if (h === 20 && m === 0 && !noted.evening) { sendAlert("📖 Hora de estudio", "Revisa Spots y Leaks.", "click"); noted.evening = true; }
       if (h === 22 && m === 0 && !noted.night) {
         const todaySess = activeRef.current.filter((s) => s.date === todayString && s.type !== "leak");
         if (todaySess.length > 0) {
           const pt = todaySess.filter((s) => s.type !== "sports").reduce((a, s) => a + s.amount, 0);
           const st = todaySess.filter((s) => s.type === "sports").reduce((a, s) => a + s.amount, 0);
-          sendAlert("📊 Resumen del Día", `Poker: ${sgn(pt)}${fmt(pt)} USD | Depor: ${sgn(st)}${fmt(st, 0)} MXN`);
+          sendAlert("📊 Resumen del Día", `Poker: ${sgn(pt)}${fmt(pt)} USD | Depor: ${sgn(st)}${fmt(st, 2)} MXN`, "success");
         }
         noted.night = true;
       }
@@ -442,7 +507,7 @@ export default function App() {
       localStorage.setItem("bk_last_date", today);
 
       const openedToday = localStorage.getItem("bk_opened_today");
-      if (openedToday !== today) { setTimeout(() => sendAlert("🌅 Diego's Edge", "Nuevo día. Registra tus check-ins."), 3000); localStorage.setItem("bk_opened_today", today); }
+      if (openedToday !== today) { setTimeout(() => sendAlert("🌅 Diego's Edge", "Nuevo día. Registra tus check-ins.", "click"), 3000); localStorage.setItem("bk_opened_today", today); }
 
       const { data: sData } = await supabase.from("sessions").select("*").eq("user_id", session.user.id).order("id", { ascending: false });
       const { data: hData } = await supabase.from("daily_habits").select("*").eq("user_id", session.user.id);
@@ -482,10 +547,11 @@ export default function App() {
   const saveConfig = useCallback(async (e) => {
     if(e) e.preventDefault();
     await supabase.auth.updateUser({ data: { base_capital: baseCapital, accent, monthly_goal: monthlyGoal } });
-    load(); sendAlert("⚙️ Config guardada", "Capital y tema actualizados.");
+    load(); sendAlert("⚙️ Config guardada", "Capital y tema actualizados.", "success");
   }, [baseCapital, accent, monthlyGoal, load, sendAlert]);
 
   const handleSetAccent = useCallback((color) => {
+    playSound('click');
     setAccent(color);
     setRecentColors((prev) => {
       const filtered = prev.filter((c) => c !== color);
@@ -496,10 +562,10 @@ export default function App() {
 
   const addSession = useCallback(async (e) => {
     if(e) e.preventDefault();
-    const amt = parseFloat(form.amount); if (!amt || amt <= 0) return;
-    const value = form.result === "win" ? amt : -amt;
+    const amt = parseFloat(form.amount); 
+    if (!amt || amt <= 0) { playSound('error'); return; }
     
-    // Toma la duración escrita manualmente en el form y la convierte a milisegundos para guardarla
+    const value = form.result === "win" ? amt : -amt;
     const finalDurationMs = form.durationMins ? parseInt(form.durationMins, 10) * 60000 : 0;
 
     const payload = {
@@ -510,46 +576,45 @@ export default function App() {
     };
     
     const { data, error } = await supabase.from("sessions").insert([payload]).select();
-    if (error) { alert(`Error: ${error.message}`); return; }
+    if (error) { playSound('error'); alert(`Error: ${error.message}`); return; }
 
     if (data && data.length > 0) {
+      playSound('success');
       setSessions((prev) => [data[0], ...prev]);
       if (form.type === "sports") setSports((p) => parseFloat((p + value).toFixed(2)));
       else                        setPoker((p)  => parseFloat((p + value).toFixed(2)));
       
       setForm((f) => ({ ...f, amount: "", note: "", rating: 0, durationMins: "" }));
-      setFlash(value > 0 ? "win" : "loss"); 
-      setTimeout(() => setFlash(null), 900); 
-      setTab("dash");
-      
-      resetTimer(); // Limpia el cronómetro superior visualmente
+      setFlash(value > 0 ? "win" : "loss"); setTimeout(() => setFlash(null), 900); setTab("dash");
+      resetTimer(); 
 
-      if (form.type === "cash" && value <= -6) sendAlert("⚠️ STOP LOSS", "3 buy-ins perdidos. Cierra la mesa.");
-      if (form.type === "cash" && value >= 10)  sendAlert("🏆 Buena sesión", "Protege las ganancias.");
+      if (form.type === "cash" && value <= -6) sendAlert("⚠️ STOP LOSS", "3 buy-ins perdidos. Cierra la mesa.", "error");
+      if (form.type === "cash" && value >= 10)  sendAlert("🏆 Buena sesión", "Protege las ganancias.", "success");
     }
   }, [form, session, sendAlert, resetTimer]);
 
   const addLeak = useCallback(async (e) => {
     if(e) e.preventDefault();
-    if (!leakForm.note.trim()) return;
+    if (!leakForm.note.trim()) { playSound('error'); return; }
     const payload = { id: Date.now(), user_id: session.user.id, type: "leak", amount: 0, note: leakForm.note, buyin: leakForm.position, date: getTodayStr(), archived: false }; 
     const { data, error } = await supabase.from("sessions").insert([payload]).select();
-    if (error) { alert(`Error: ${error.message}`); return; }
+    if (error) { playSound('error'); alert(`Error: ${error.message}`); return; }
     if (data && data.length > 0) {
+      playSound('success');
       setSessions((prev) => [data[0], ...prev]);
       setLeakForm((f) => ({ ...f, note: "" })); setFlash("win"); setTimeout(() => setFlash(null), 900);
     }
   }, [leakForm, session]);
 
   const toggleHabit = useCallback(async (e, k) => {
-    e.preventDefault(); e.stopPropagation();
+    e.preventDefault(); e.stopPropagation(); playSound('click');
     const nextStatus = !habits[k];
     setHabits((prev) => ({ ...prev, [k]: nextStatus }));
     supabase.from("daily_habits").upsert({ id: k, user_id: session.user.id, status: nextStatus }).catch(console.error);
   }, [habits, session]);
 
   const toggleTilt = useCallback(async (e, k) => {
-    e.preventDefault(); e.stopPropagation();
+    e.preventDefault(); e.stopPropagation(); playSound('click');
     const nextStatus = !tilt[k];
     setTilt((prev) => ({ ...prev, [k]: nextStatus }));
     supabase.from("daily_habits").upsert({ id: `tilt_${k}`, user_id: session.user.id, status: nextStatus }).catch(console.error);
@@ -557,12 +622,13 @@ export default function App() {
 
   const saveJournal = useCallback(async (e) => {
     if(e) e.preventDefault();
+    playSound('success');
     await supabase.from("daily_habits").upsert({ id: "journal", user_id: session.user.id, status: false, note: journal });
     setJournalSaved(true); setTimeout(() => setJournalSaved(false), 2000);
   }, [session, journal]);
 
   const archiveAll = useCallback(async (e) => {
-    if(e) e.preventDefault();
+    if(e) e.preventDefault(); playSound('error');
     if (!window.confirm("¿Archivar las sesiones y resetear los datos a cero? Las sesiones seguirán disponibles en el historial oculto.")) return;
     const activeIds = sessions.filter((s) => !s.archived).map((s) => s.id);
     if (activeIds.length > 0) await supabase.from("sessions").update({ archived: true }).in("id", activeIds);
@@ -572,7 +638,7 @@ export default function App() {
   }, [sessions, session, baseCapital]);
 
   const deleteAllData = useCallback(async (e) => {
-    if(e) e.preventDefault();
+    if(e) e.preventDefault(); playSound('error');
     if (!window.confirm("⚠️ ¡PELIGRO! ¿Estás completamente seguro de ELIMINAR TODOS TUS DATOS de forma permanente? Esto no se puede deshacer.")) return;
     await supabase.from("sessions").delete().eq("user_id", session.user.id);
     await supabase.from("daily_habits").delete().eq("user_id", session.user.id);
@@ -581,7 +647,7 @@ export default function App() {
   }, [session, baseCapital]);
 
   const exportCSV = useCallback((e) => {
-    if(e) e.preventDefault();
+    if(e) e.preventDefault(); playSound('success');
     const header = "Fecha,Tipo,Monto,Nota,Rating,Duración(min),Foco previo\n";
     const rows = active.filter((x) => x.type !== "leak").map((s) => [s.date, s.type, s.amount, `"${(s.note || "").replace(/"/g, "'")}"`, s.rating || 0, s.duration ? Math.round(s.duration / 60000) : 0, `"${(s.pre_note || "").replace(/"/g, "'")}"`].join(",")).join("\n");
     const blob = new Blob([header + rows], { type: "text/csv;charset=utf-8;" });
@@ -628,7 +694,7 @@ export default function App() {
   const worstSession  = useMemo(() => pokerAmounts.length ? Math.min(...pokerAmounts) : 0, [pokerAmounts]);
   const avgSession    = useMemo(() => pokerAmounts.length ? pokerAmounts.reduce((a, b) => a + b, 0) / pokerAmounts.length : 0, [pokerAmounts]);
 
-  // Sports Analytics
+  // Sports Analytics (Con centavos .00)
   const sportsAmounts = useMemo(() => sportsSessions.map((s) => s.amount), [sportsSessions]);
   const sportsWins    = useMemo(() => sportsSessions.filter((x) => x.amount > 0).length, [sportsSessions]);
   const sportsWinRate = sportsSessions.length ? Math.round((sportsWins / sportsSessions.length) * 100) : 0;
@@ -686,7 +752,6 @@ export default function App() {
     return { total, wins, invested, profit: parseFloat(profit.toFixed(2)), roi: invested > 0 ? (profit / invested) * 100 : 0, itm: (wins / total) * 100 };
   }, [tournamentSessions]);
 
-  // Modificado a 80 manos estimadas por hora
   const sessionsWithDuration = useMemo(() => pokerSessions.filter((s) => s.duration && s.duration > 60000), [pokerSessions]);
   const avgPerHour = useMemo(() => {
     if (!sessionsWithDuration.length) return null;
@@ -698,23 +763,18 @@ export default function App() {
   const bb100 = useMemo(() => { if (avgPerHour === null) return null; return ((avgPerHour / 80) / 0.02) * 100; }, [avgPerHour]);
 
   const weeklyStats = useMemo(() => ({ sessions: pokerSessions.length, profit: pokerProfit, winRate: pokerSessions.length ? Math.round((pokerWins / pokerSessions.length) * 100) : 0, leaks: leakSessions.length, best: bestSession }), [pokerSessions, pokerProfit, pokerWins, leakSessions, bestSession]);
-  const sports5pct = useMemo(() => parseFloat((sports * 0.05).toFixed(0)), [sports]);
+  const sports5pct = useMemo(() => parseFloat((sports * 0.05).toFixed(2)), [sports]);
 
   // ─── STYLE HELPERS ─────────────────────────────────────────────────────────
 
   const inputStyle = { ...INPUT_STYLE_BASE, border: `1px solid ${C.border}`, background: C.surface, color: C.text };
 
   const getPillStyle = (on, color) => ({
-    padding: "10px 18px", borderRadius: 12, 
-    border: `2px solid ${on ? color : C.border}`,
-    background: on ? color : "transparent", 
-    color: on ? "#ffffff" : C.muted,
+    padding: "10px 18px", borderRadius: 12, border: `2px solid ${on ? color : C.border}`,
+    background: on ? color : "transparent", color: on ? "#ffffff" : C.muted,
     fontSize: 13, cursor: "pointer", fontFamily: fontClean, fontWeight: "bold",
-    transition: "all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275)",
-    transform: on ? "scale(1.05)" : "scale(1)", 
-    boxShadow: on ? `0 6px 12px ${color}40` : "none", 
-    display: "flex", alignItems: "center", gap: 6,
-    outline: "none"
+    transition: "all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275)", transform: on ? "scale(1.05)" : "scale(1)", 
+    boxShadow: on ? `0 6px 12px ${color}40` : "none", display: "flex", alignItems: "center", gap: 6, outline: "none"
   });
 
   const getTypeBtnStyle = (v) => ({
@@ -731,15 +791,12 @@ export default function App() {
   });
 
   const cardStyle = {
-    background: C.card, border: `1px solid ${C.border}`, borderRadius: 16, padding: 20, marginBottom: 16,
-    boxShadow: "0 4px 12px rgba(0,0,0,0.15)"
+    background: C.card, border: `1px solid ${C.border}`, borderRadius: 16, padding: 20, marginBottom: 16, boxShadow: "0 4px 12px rgba(0,0,0,0.15)"
   };
 
   const sectionLabelStyle = {
     fontSize: 12, fontWeight: "600", color: C.muted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 16, fontFamily: fontClean
   };
-
-  const [gtoDepth, setGtoDepth] = useState("100bb");
 
   // ─── LOGIN SCREEN ────────────────────────────────────────────────────────
 
@@ -754,12 +811,12 @@ export default function App() {
           <form onSubmit={handleAuth}>
             <input type="email" placeholder="Correo electrónico" value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} required style={{ ...inputStyle, marginBottom: 16 }} />
             <input type="password" placeholder="Contraseña" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} required style={{ ...inputStyle, marginBottom: 24 }} />
-            <button type="submit" disabled={authLoading} style={{ width: "100%", padding: 16, borderRadius: 12, border: "none", background: C.accentDim, color: C.accent, fontSize: 15, fontWeight: "bold", cursor: "pointer", letterSpacing: 1, textTransform: "uppercase" }}>
+            <button type="submit" disabled={authLoading} onClick={() => playSound('click')} style={{ width: "100%", padding: 16, borderRadius: 12, border: "none", background: C.accentDim, color: C.accent, fontSize: 15, fontWeight: "bold", cursor: "pointer", letterSpacing: 1, textTransform: "uppercase" }}>
               {authLoading ? "Cargando..." : isLogin ? "Acceder" : "Crear cuenta"}
             </button>
           </form>
           <div style={{ textAlign: "center", marginTop: 24 }}>
-            <button type="button" onClick={() => setIsLogin(!isLogin)} style={{ background: "none", border: "none", color: C.muted, fontSize: 13, cursor: "pointer", textDecoration: "underline" }}>
+            <button type="button" onClick={() => { playSound('click'); setIsLogin(!isLogin); }} style={{ background: "none", border: "none", color: C.muted, fontSize: 13, cursor: "pointer", textDecoration: "underline" }}>
               {isLogin ? "¿Sin cuenta? Regístrate" : "Ya tengo cuenta"}
             </button>
           </div>
@@ -802,7 +859,7 @@ export default function App() {
                   style={{ flex: 1, padding: "12px 16px", borderRadius: 10, border: `1px solid ${C.border}`, background: "transparent", color: C.muted, fontSize: 12, cursor: "pointer" }}>
                   Omitir y empezar
                 </button>
-                <button type="button" onClick={() => { setShowPreSession(false); setPreSessionNote(""); }}
+                <button type="button" onClick={(e) => { e.preventDefault(); playSound('click'); setShowPreSession(false); setPreSessionNote(""); }}
                   style={{ flex: 1, padding: "12px 16px", borderRadius: 10, border: `1px solid ${C.border}`, background: "transparent", color: C.muted, fontSize: 12, cursor: "pointer" }}>
                   Cancelar
                 </button>
@@ -863,9 +920,9 @@ export default function App() {
             <div style={{ ...cardStyle, border: `1px solid ${sportsProfit >= 0 ? C.accentMid : C.redD}`, position: "relative", overflow: "hidden", marginBottom: 0 }}>
               <div style={{ position: "absolute", top: 0, right: 0, width: 80, height: 80, background: (sportsProfit >= 0 ? C.accent : C.red) + "10", borderRadius: "0 16px 0 80px" }} />
               <div style={sectionLabelStyle}>Depor · MXN</div>
-              <div style={{ fontSize: 34, fontWeight: "bold", color: sportsProfit >= 0 ? C.accent : C.red, fontFamily: fontClassic }}>${fmt(sports, 0)}</div>
+              <div style={{ fontSize: 34, fontWeight: "bold", color: sportsProfit >= 0 ? C.accent : C.red, fontFamily: fontClassic }}>${fmt(sports, 2)}</div>
               <div style={{ fontSize: 13, color: sportsProfit >= 0 ? C.accent : C.red, marginTop: 4, fontWeight: "500" }}>
-                {sgn(sportsProfit)}{fmt(sportsProfit, 0)} ({sgn(sportsProfit)}{fmt((sportsProfit / baseCapital.sports) * 100, 1)}%)
+                {sgn(sportsProfit)}{fmt(sportsProfit, 2)} ({sgn(sportsProfit)}{fmt((sportsProfit / baseCapital.sports) * 100, 1)}%)
               </div>
               <div style={{ fontSize: 12, color: C.gold, marginTop: 8, fontWeight: "bold" }}>5% = ${sports5pct}</div>
               <Sparkline id="sports" data={sportsCurve} color={sportsProfit >= 0 ? C.accent : C.red} />
@@ -1014,30 +1071,36 @@ export default function App() {
 
             <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
               {[["cash", "Cash NL2"], ["tournament", "Torneo"], ["sports", "Depor"]].map(([v, l]) => (
-                <button type="button" key={v} onClick={() => setForm({ ...form, type: v })} style={getTypeBtnStyle(v)}>{l}</button>
+                <button type="button" key={v} onClick={(e) => { e.preventDefault(); playSound('click'); setForm({ ...form, type: v }); }} style={getTypeBtnStyle(v)}>{l}</button>
               ))}
             </div>
 
             <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
-              <button type="button" onClick={() => setForm({ ...form, result: "win" })}  style={getResBtnStyle("win")}>▲ Ganancia</button>
-              <button type="button" onClick={() => setForm({ ...form, result: "loss" })} style={getResBtnStyle("loss")}>▼ Pérdida</button>
+              <button type="button" onClick={(e) => { e.preventDefault(); playSound('click'); setForm({ ...form, result: "win" }); }}  style={getResBtnStyle("win")}>▲ Ganancia</button>
+              <button type="button" onClick={(e) => { e.preventDefault(); playSound('click'); setForm({ ...form, result: "loss" }); }} style={getResBtnStyle("loss")}>▼ Pérdida</button>
             </div>
 
             {form.type === "sports" && (
               <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, padding: "12px 16px", background: C.gold + "15", borderRadius: 10, border: `1px solid ${C.gold}33` }}>
                 <span style={{ fontSize: 13, color: C.gold, fontWeight: "500" }}>5% recomendado:</span>
                 <span style={{ fontSize: 16, fontWeight: "bold", color: C.gold, fontFamily: fontClassic }}>${sports5pct} MXN</span>
-                <button type="button" onClick={() => setForm({ ...form, amount: String(sports5pct) })}
+                <button type="button" onClick={(e) => { e.preventDefault(); playSound('click'); setForm({ ...form, amount: String(sports5pct) }); }}
                   style={{ marginLeft: "auto", fontSize: 12, padding: "6px 14px", borderRadius: 8, border: `1px solid ${C.gold}55`, background: C.gold + "22", color: C.gold, cursor: "pointer", fontWeight: "bold" }}>
                   Usar
                 </button>
               </div>
             )}
 
+            {timerElapsedRef.current > 0 && form.type !== "sports" && (
+              <div style={{ padding: "10px 14px", background: C.accentDim, border: `1px solid ${C.accent}44`, borderRadius: 10, marginBottom: 16, fontSize: 13, color: C.accent, fontWeight: "500" }}>
+                ⏱ Se asociará un tiempo de <strong>{fmtElapsed(timerElapsedRef.current)}</strong> a este registro para calcular tu Rentabilidad por Hora (BB/100).
+              </div>
+            )}
+
             <div style={{ fontSize: 11, fontWeight: "600", color: C.muted, textTransform: "uppercase", marginBottom: 8 }}>Acceso rápido</div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 20 }}>
               {(form.type === "sports" ? QUICK_SPORTS : QUICK_POKER).map((q) => (
-                <button type="button" key={q} onClick={() => setForm({ ...form, amount: String(q) })}
+                <button type="button" key={q} onClick={(e) => { e.preventDefault(); playSound('click'); setForm({ ...form, amount: String(q) }); }}
                   style={{ padding: "8px 16px", borderRadius: 10, border: `1px solid ${String(form.amount) === String(q) ? C.accent : C.border}`, background: String(form.amount) === String(q) ? C.accentDim : C.surface, color: String(form.amount) === String(q) ? C.accent : C.text, fontSize: 14, cursor: "pointer", fontWeight: "600", fontFamily: fontClassic }}>
                   {form.type === "sports" ? `$${q}` : `${q}$`}
                 </button>
@@ -1050,10 +1113,9 @@ export default function App() {
                 value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })}
                 style={{ ...inputStyle, fontSize: 18, fontFamily: fontClassic, flex: 2 }}
               />
-              {/* CAMPO DE MINUTOS PARA REGISTRO MANUAL/AUTOMÁTICO */}
               {form.type !== "sports" && (
                 <input type="number" min="0" step="1"
-                  placeholder="Minutos jugados"
+                  placeholder="Min. jugados"
                   value={form.durationMins} onChange={(e) => setForm({ ...form, durationMins: e.target.value })}
                   style={{ ...inputStyle, fontSize: 14, flex: 1 }}
                 />
@@ -1089,7 +1151,7 @@ export default function App() {
           <div>
             <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
               {[["general", "General"], ["months", "Meses"], ["tournaments", "Torneos"], ["sports", "Deportes"]].map(([v, l]) => (
-                <button type="button" key={v} onClick={() => setAnalyticsView(v)}
+                <button type="button" key={v} onClick={(e) => { e.preventDefault(); playSound('click'); setAnalyticsView(v); }}
                   style={{ flex: 1, padding: "10px 4px", borderRadius: 10, border: `1px solid ${analyticsView === v ? C.accent + "88" : C.border}`, background: analyticsView === v ? C.accentDim : C.card, color: analyticsView === v ? C.accent : C.muted, fontSize: 12, cursor: "pointer", fontWeight: "600" }}>
                   {l}
                 </button>
@@ -1261,8 +1323,8 @@ export default function App() {
                 {[
                   { label: "Win Rate",       value: sportsSessions.length ? `${sportsWinRate}%` : "—", color: sportsWinRate >= 50 ? C.green : C.red },
                   { label: "Total Apuestas", value: sportsSessions.length, color: C.text },
-                  { label: "Mejor ganancia", value: `+$${fmt(sportsBest, 0)}`, color: C.green },
-                  { label: "Peor pérdida",   value: `$${fmt(sportsWorst, 0)}`, color: C.red },
+                  { label: "Mejor ganancia", value: `+$${fmt(sportsBest, 2)}`, color: C.green },
+                  { label: "Peor pérdida",   value: `$${fmt(sportsWorst, 2)}`, color: C.red },
                 ].map((m) => (
                   <div key={m.label} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 16, padding: 16, boxShadow: "0 4px 12px rgba(0,0,0,0.15)" }}>
                     <div style={{ fontSize: 11, fontWeight: "600", color: C.muted, textTransform: "uppercase", marginBottom: 8 }}>{m.label}</div>
@@ -1275,7 +1337,7 @@ export default function App() {
                 <div style={{ ...sectionLabelStyle, color: C.accent }}>Promedio por apuesta</div>
                 <div style={{ textAlign: "center", padding: "10px 0" }}>
                   <div style={{ fontSize: 36, fontWeight: "bold", color: sportsAvg >= 0 ? C.green : C.red, fontFamily: fontClassic }}>
-                    {sgn(sportsAvg)}${fmt(Math.abs(sportsAvg), 0)} MXN
+                    {sgn(sportsAvg)}${fmt(Math.abs(sportsAvg), 2)} MXN
                   </div>
                   <div style={{ fontSize: 12, color: C.muted, marginTop: 8, textTransform: "uppercase", fontWeight: "600" }}>Beneficio neto promedio</div>
                 </div>
@@ -1297,7 +1359,7 @@ export default function App() {
                           <div style={{ display: "flex", gap: 16, fontSize: 13 }}>
                             <span style={{ color: C.muted }}>{m.sessions} ap.</span>
                             <span style={{ color: C.muted }}>{m.winRate}% wr</span>
-                            <span style={{ color: isPos ? C.green : C.red, fontWeight: "bold", fontFamily: fontClassic }}>{sgn(m.profit)}${fmt(Math.abs(m.profit), 0)}</span>
+                            <span style={{ color: isPos ? C.green : C.red, fontWeight: "bold", fontFamily: fontClassic }}>{sgn(m.profit)}${fmt(Math.abs(m.profit), 2)}</span>
                           </div>
                         </div>
                         <div style={{ height: 8, background: C.surface, borderRadius: 8, overflow: "hidden" }}>
@@ -1313,18 +1375,18 @@ export default function App() {
         )}
 
         {/* ══════════════════════════════════════════════════════════════
-            SPOTS & LEAKS (AHORA CON PESTAÑA GTO)
+            SPOTS & LEAKS (AHORA CON MATRIZ GTO 13x13)
         ══════════════════════════════════════════════════════════════ */}
         {tab === "leaks" && (
           <div>
             <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
-              <button type="button" onClick={() => setLeaksView("registry")}
+              <button type="button" onClick={(e) => { e.preventDefault(); playSound('click'); setLeaksView("registry"); }}
                 style={{ flex: 1, padding: "12px", borderRadius: 10, border: `1px solid ${leaksView === "registry" ? C.gold : C.border}`, background: leaksView === "registry" ? C.gold + "22" : C.card, color: leaksView === "registry" ? C.gold : C.muted, fontSize: 13, cursor: "pointer", fontWeight: "bold" }}>
                 Mis Leaks
               </button>
-              <button type="button" onClick={() => setLeaksView("gto")}
+              <button type="button" onClick={(e) => { e.preventDefault(); playSound('click'); setLeaksView("gto"); }}
                 style={{ flex: 1, padding: "12px", borderRadius: 10, border: `1px solid ${leaksView === "gto" ? C.accent : C.border}`, background: leaksView === "gto" ? C.accentDim : C.card, color: leaksView === "gto" ? C.accent : C.muted, fontSize: 13, cursor: "pointer", fontWeight: "bold" }}>
-                Tablas GTO (Estudio)
+                Tablas GTO
               </button>
             </div>
 
@@ -1335,7 +1397,7 @@ export default function App() {
                   <div style={{ fontSize: 12, color: C.muted, marginBottom: 10, fontWeight: "500" }}>Posición</div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
                     {POSITIONS.map((p) => (
-                      <button type="button" key={p} onClick={(e) => { e.preventDefault(); setLeakForm({ ...leakForm, position: p }); }}
+                      <button type="button" key={p} onClick={(e) => { e.preventDefault(); playSound('click'); setLeakForm({ ...leakForm, position: p }); }}
                         style={{ padding: "8px 14px", borderRadius: 10, border: `1px solid ${leakForm.position === p ? C.gold : C.border}`, background: leakForm.position === p ? C.gold + "22" : C.surface, color: leakForm.position === p ? C.gold : C.text, fontSize: 13, cursor: "pointer", fontWeight: "600" }}>
                         {p}
                       </button>
@@ -1377,26 +1439,41 @@ export default function App() {
             {leaksView === "gto" && (
               <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
                 <div style={{ padding: "20px 20px 10px" }}>
-                  <div style={{ ...sectionLabelStyle, color: C.accent, marginBottom: 16 }}>Rangos RFI y Push/Fold preflop</div>
-                  <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-                    <button type="button" onClick={() => setGtoDepth("100bb")} style={{ flex: 1, padding: "10px 4px", borderRadius: 8, border: `1px solid ${gtoDepth === "100bb" ? C.accent : C.border}`, background: gtoDepth === "100bb" ? C.accentDim : C.surface, color: gtoDepth === "100bb" ? C.accent : C.muted, fontSize: 12, fontWeight: "bold", cursor: "pointer" }}>100BB (Cash)</button>
-                    <button type="button" onClick={() => setGtoDepth("40bb")} style={{ flex: 1, padding: "10px 4px", borderRadius: 8, border: `1px solid ${gtoDepth === "40bb" ? C.accent : C.border}`, background: gtoDepth === "40bb" ? C.accentDim : C.surface, color: gtoDepth === "40bb" ? C.accent : C.muted, fontSize: 12, fontWeight: "bold", cursor: "pointer" }}>40-50BB</button>
-                    <button type="button" onClick={() => setGtoDepth("20bb")} style={{ flex: 1, padding: "10px 4px", borderRadius: 8, border: `1px solid ${gtoDepth === "20bb" ? C.accent : C.border}`, background: gtoDepth === "20bb" ? C.accentDim : C.surface, color: gtoDepth === "20bb" ? C.accent : C.muted, fontSize: 12, fontWeight: "bold", cursor: "pointer" }}>15-20BB</button>
+                  <div style={{ ...sectionLabelStyle, color: C.accent, marginBottom: 16 }}>Matriz Preflop GTO (13x13)</div>
+                  
+                  {/* Selectores de Profundidad */}
+                  <div style={{ display: "flex", gap: 8, marginBottom: 16, overflowX: "auto", paddingBottom: 4 }}>
+                    {Object.keys(GTO_TABLES).map(k => (
+                      <button type="button" key={k} onClick={(e) => { e.preventDefault(); playSound('click'); setGtoDepth(k); setGtoPosIdx(0); }} 
+                        style={{ whiteSpace: "nowrap", padding: "10px 14px", borderRadius: 8, border: `1px solid ${gtoDepth === k ? C.accent : C.border}`, background: gtoDepth === k ? C.accentDim : C.surface, color: gtoDepth === k ? C.accent : C.muted, fontSize: 12, fontWeight: "bold", cursor: "pointer" }}>
+                        {k.replace("_", " ").toUpperCase()}
+                      </button>
+                    ))}
                   </div>
-                </div>
-                
-                <div style={{ background: C.surface }}>
-                  {GTO_TABLES[gtoDepth].map((row, idx) => (
-                    <div key={row.pos} style={{ padding: "16px 20px", borderTop: `1px solid ${C.border}`, display: "flex", gap: 16 }}>
-                      <div style={{ width: 44, height: "fit-content", background: C.card, border: `1px solid ${C.border}`, color: C.text, padding: "6px 0", borderRadius: 8, fontSize: 12, fontWeight: "bold", textAlign: "center" }}>
+
+                  {/* Selectores de Posición */}
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+                    {GTO_TABLES[gtoDepth].map((row, idx) => (
+                      <button type="button" key={idx} onClick={(e) => { e.preventDefault(); playSound('click'); setGtoPosIdx(idx); }}
+                        style={{ padding: "8px 12px", borderRadius: 8, border: `1px solid ${gtoPosIdx === idx ? C.text : C.border}`, background: gtoPosIdx === idx ? C.text : "transparent", color: gtoPosIdx === idx ? C.bg : C.muted, fontSize: 11, fontWeight: "bold", cursor: "pointer" }}>
                         {row.pos}
-                      </div>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 14, color: C.accent, fontWeight: "bold", marginBottom: 6, lineHeight: 1.4 }}>{row.range}</div>
-                        <div style={{ fontSize: 12, color: C.textDim, lineHeight: 1.5 }}>{row.notes}</div>
-                      </div>
-                    </div>
-                  ))}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div style={{ fontSize: 13, color: C.textDim, lineHeight: 1.5, background: C.surface, padding: 12, borderRadius: 8, border: `1px solid ${C.border}` }}>
+                    <span style={{ fontWeight: "bold", color: C.accent }}>INFO: </span> 
+                    {GTO_TABLES[gtoDepth][gtoPosIdx].notes}
+                  </div>
+
+                  {/* Renderizado de la Matriz */}
+                  <GTOMatrix rangeStr={GTO_TABLES[gtoDepth][gtoPosIdx].range} C={C} />
+                  
+                  <div style={{ display: "flex", gap: 12, marginTop: 12, justifyContent: "center", fontSize: 10, color: C.muted, fontWeight: "bold" }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 4 }}><div style={{width: 10, height: 10, background: C.greenD}}></div> Pares</span>
+                    <span style={{ display: "flex", alignItems: "center", gap: 4 }}><div style={{width: 10, height: 10, background: "#0284c7"}}></div> Suited</span>
+                    <span style={{ display: "flex", alignItems: "center", gap: 4 }}><div style={{width: 10, height: 10, background: C.goldD}}></div> Offsuit</span>
+                  </div>
                 </div>
               </div>
             )}
@@ -1410,7 +1487,7 @@ export default function App() {
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
               <div style={sectionLabelStyle}>{showArchived ? "Archivadas" : "Historial"}</div>
-              <button type="button" onClick={(e) => { e.preventDefault(); setShowArchived(!showArchived); }} style={{ fontSize: 12, background: C.surface, border: `1px solid ${C.border}`, color: C.text, padding: "8px 16px", borderRadius: 8, cursor: "pointer", fontWeight: "600" }}>
+              <button type="button" onClick={(e) => { e.preventDefault(); playSound('click'); setShowArchived(!showArchived); }} style={{ fontSize: 12, background: C.surface, border: `1px solid ${C.border}`, color: C.text, padding: "8px 16px", borderRadius: 8, cursor: "pointer", fontWeight: "600" }}>
                 {showArchived ? "Ver activas" : "Archivadas"}
               </button>
             </div>
@@ -1436,7 +1513,7 @@ export default function App() {
                         )}
                         {dayTotalSports !== 0 && (
                           <div style={{ fontSize: 13, fontWeight: "bold", color: dayTotalSports >= 0 ? C.accent : C.red, fontFamily: fontClassic }}>
-                            {sgn(dayTotalSports)}{fmt(dayTotalSports, 0)} MXN
+                            {sgn(dayTotalSports)}{fmt(dayTotalSports, 2)} MXN
                           </div>
                         )}
                       </div>
@@ -1455,7 +1532,7 @@ export default function App() {
                             </div>
                           </div>
                           <div style={{ fontSize: 18, fontWeight: "bold", color: s.amount > 0 ? C.green : C.red, fontFamily: fontClassic }}>
-                            {s.amount > 0 ? "+" : ""}{fmt(s.amount)} {s.type === "sports" ? "MXN" : "USD"}
+                            {s.amount > 0 ? "+" : ""}{fmt(s.amount, s.type === "sports" ? 2 : 2)} {s.type === "sports" ? "MXN" : "USD"}
                           </div>
                         </div>
                       ))}
@@ -1519,7 +1596,7 @@ export default function App() {
                   maxLength={7}
                 />
                 <button type="button" 
-                  onClick={(e) => { e.preventDefault(); if (isValid(customHex)) { handleSetAccent(customHex); setCustomHex(""); } else alert("Hex inválido. Usa formato #RRGGBB"); }}
+                  onClick={(e) => { e.preventDefault(); playSound('click'); if (isValid(customHex)) { handleSetAccent(customHex); setCustomHex(""); } else alert("Hex inválido. Usa formato #RRGGBB"); }}
                   style={{ padding: "10px 20px", borderRadius: 10, border: `1px solid ${C.border}`, background: customHex && isValid(customHex) ? customHex + "33" : C.surface, color: C.text, fontSize: 14, cursor: "pointer", fontWeight: "600" }}>
                   Aplicar
                 </button>
@@ -1538,7 +1615,7 @@ export default function App() {
               { k: "casino", l: "Casino — Prohibido", c: C.red },
             ].map((sec) => (
               <div key={sec.k} style={{ marginBottom: 12 }}>
-                <button type="button" onClick={(e) => { e.preventDefault(); setRulesOpen(rulesOpen === sec.k ? null : sec.k); }}
+                <button type="button" onClick={(e) => { e.preventDefault(); playSound('click'); setRulesOpen(rulesOpen === sec.k ? null : sec.k); }}
                   style={{ width: "100%", textAlign: "left", padding: "16px 20px", borderRadius: rulesOpen === sec.k ? "12px 12px 0 0" : 12, border: `1px solid ${rulesOpen === sec.k ? sec.c + "55" : C.border}`, background: C.card, color: sec.c, fontSize: 15, fontWeight: "bold", cursor: "pointer", display: "flex", justifyContent: "space-between" }}>
                   {sec.l} <span style={{ color: C.muted }}>{rulesOpen === sec.k ? "▲" : "▼"}</span>
                 </button>
@@ -1595,7 +1672,7 @@ export default function App() {
             { k: "hist",      icon: "≡", l: "Historial"},
             { k: "rules",     icon: "◉", l: "Config"   },
           ].map((t) => (
-            <button type="button" key={t.k} onClick={(e) => { e.preventDefault(); setTab(t.k); }}
+            <button type="button" key={t.k} onClick={(e) => { e.preventDefault(); playSound('click'); setTab(t.k); }}
               style={{ flex: 1, padding: "16px 4px 12px", border: "none", background: "transparent", cursor: "pointer", color: tab === t.k ? C.accent : C.muted, transition: "color 0.2s" }}>
               <div style={{ fontSize: 18, marginBottom: 4 }}>{t.icon}</div>
               <div style={{ fontSize: 10, fontWeight: "600", textTransform: "uppercase" }}>{t.l}</div>
