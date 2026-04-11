@@ -457,6 +457,7 @@ export default function App() {
     const amt = parseFloat(form.amount); if (!amt || amt <= 0) return;
     const value = form.result === "win" ? amt : -amt;
     const payload = {
+      id: Date.now(), // <--- SOLUCIÓN DEL ERROR AQUÍ
       user_id: session.user.id, type: form.type, amount: value, note: form.note,
       date: getTodayStr(), archived: false, rating: form.rating || 0,
       duration: timerElapsedRef.current || 0, pre_note: preSessionNoteRef.current || "",
@@ -478,7 +479,7 @@ export default function App() {
 
   const addLeak = useCallback(async () => {
     if (!leakForm.note.trim()) return;
-    const payload = { user_id: session.user.id, type: "leak", amount: 0, note: leakForm.note, buyin: leakForm.position, date: getTodayStr(), archived: false };
+    const payload = { id: Date.now(), user_id: session.user.id, type: "leak", amount: 0, note: leakForm.note, buyin: leakForm.position, date: getTodayStr(), archived: false }; // <--- Y AQUÍ
     const { data, error } = await supabase.from("sessions").insert([payload]).select();
     if (error) { alert(`Error: ${error.message}`); return; }
     if (data && data.length > 0) {
