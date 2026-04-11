@@ -65,7 +65,6 @@ const QUICK_SPORTS = [25, 50, 100, 200, 500];
 
 // ─── HELPERS ────────────────────────────────────────────────────────────────
 
-// Formateo de números con comas para mejor legibilidad
 const fmt = (n, d = 2) => Number(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
 const sgn = (n) => (n >= 0 ? "+" : "");
 const isValid = (hex) => /^#[0-9A-Fa-f]{6}$/.test(hex);
@@ -91,7 +90,7 @@ const groupByDate = (arr) => {
 const getTodayStr = () => new Date().toLocaleDateString("es-MX", { day: "2-digit", month: "short" });
 const getMonthStr = () => new Date().toLocaleDateString("es-MX", { month: "short" });
 
-// ─── COLOR SYSTEM ────────────────────────────────────────
+// ─── COLOR SYSTEM ────────────────────────────────────────────────────────────
 
 const makeC = (accent = "#3b82f6") => ({
   bg: "#0d1117",
@@ -111,8 +110,6 @@ const makeC = (accent = "#3b82f6") => ({
   text: "#f0f6fc",
   textDim: "#c9d1d9",
 });
-
-// ─── FONT HELPERS ────────────────────────────────────────────────────────────
 
 const fontClassic = "'Georgia', serif";
 const fontClean   = "system-ui, -apple-system, sans-serif";
@@ -260,14 +257,12 @@ const BarChart = ({ data, C }) => {
 
 export default function App() {
 
-  // ── Auth ──────────────────────────────────────────────────────────────────
   const [session,      setSession]      = useState(null);
   const [authEmail,    setAuthEmail]    = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [isLogin,      setIsLogin]      = useState(true);
   const [authLoading,  setAuthLoading]  = useState(false);
 
-  // ── Core ──────────────────────────────────────────────────────────────────
   const [tab,          setTab]          = useState("dash");
   const [sessions,     setSessions]     = useState([]);
   const [baseCapital,  setBaseCapital]  = useState({ poker: 50, sports: 500 });
@@ -283,7 +278,6 @@ export default function App() {
   const [showArchived, setShowArchived] = useState(false);
   const [pushStatus,   setPushStatus]   = useState("Checking...");
 
-  // ── Timer & Features ──────────────────────────────────────────────────────
   const [timerActive,  setTimerActive]  = useState(false);
   const [timerStart,   setTimerStart]   = useState(null);
   const [timerElapsed, setTimerElapsed] = useState(0);
@@ -296,7 +290,7 @@ export default function App() {
   const [showWeeklyModal, setShowWeeklyModal] = useState(false);
   const [showPreSession,  setShowPreSession]  = useState(false);
   const [preSessionNote,  setPreSessionNote]  = useState("");
-  const [analyticsView,   setAnalyticsView]   = useState("general"); // general | months | tournaments | sports
+  const [analyticsView,   setAnalyticsView]   = useState("general");
 
   const timerElapsedRef   = useRef(0);
   const preSessionNoteRef = useRef("");
@@ -307,7 +301,7 @@ export default function App() {
   const active   = useMemo(() => sessions.filter((x) => !x.archived),  [sessions]);
   const archived = useMemo(() => sessions.filter((x) =>  x.archived),  [sessions]);
 
-  // ── Timer Logic ───────────────────────────────────────────────────────────
+  // ── Timer Logic
   useEffect(() => {
     if (!timerActive) return;
     const id = setInterval(() => setTimerElapsed(Date.now() - timerStart), 1000);
@@ -330,7 +324,7 @@ export default function App() {
     setTimerActive(false); setTimerElapsed(0); setTimerStart(null); setPreSessionNote("");
   }, []);
 
-  // ── Auth & Load Logic ─────────────────────────────────────────────────────
+  // ── Auth & Load Logic
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
@@ -494,13 +488,34 @@ export default function App() {
     }
   }, [leakForm, session]);
 
-  const toggleHabit = useCallback(async (k) => {
-    setHabits((prev) => { const next = !prev[k]; supabase.from("daily_habits").upsert({ id: k, user_id: session.user.id, status: next }).catch(console.error); return { ...prev, [k]: next }; });
-  }, [session]);
+  // ── FIX: ACTUALIZACIÓN OPTIMISTA PARA HÁBITOS Y TILT ──────────────────────
+  const toggleHabit = useCallback(async (e, k) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const nextStatus = !habits[k];
+    
+    // UI Instantánea
+    setHabits((prev) => ({ ...prev, [k]: nextStatus }));
+    
+    // Guardado en segundo plano
+    supabase.from("daily_habits")
+      .upsert({ id: k, user_id: session.user.id, status: nextStatus })
+      .then(({ error }) => { if (error) console.error("Error BD:", error); });
+  }, [habits, session]);
 
-  const toggleTilt = useCallback(async (k) => {
-    setTilt((prev) => { const next = !prev[k]; supabase.from("daily_habits").upsert({ id: `tilt_${k}`, user_id: session.user.id, status: next }).catch(console.error); return { ...prev, [k]: next }; });
-  }, [session]);
+  const toggleTilt = useCallback(async (e, k) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const nextStatus = !tilt[k];
+    
+    // UI Instantánea
+    setTilt((prev) => ({ ...prev, [k]: nextStatus }));
+    
+    // Guardado en segundo plano
+    supabase.from("daily_habits")
+      .upsert({ id: `tilt_${k}`, user_id: session.user.id, status: nextStatus })
+      .then(({ error }) => { if (error) console.error("Error BD:", error); });
+  }, [tilt, session]);
 
   const saveJournal = useCallback(async (e) => {
     if(e) e.preventDefault();
@@ -510,13 +525,31 @@ export default function App() {
 
   const archiveAll = useCallback(async (e) => {
     if(e) e.preventDefault();
-    if (!window.confirm("¿Archivar todos los datos y empezar desde cero?")) return;
+    if (!window.confirm("¿Archivar las sesiones y resetear los datos a cero? Las sesiones seguirán disponibles en el historial oculto.")) return;
     const activeIds = sessions.filter((s) => !s.archived).map((s) => s.id);
     if (activeIds.length > 0) await supabase.from("sessions").update({ archived: true }).in("id", activeIds);
     await supabase.from("daily_habits").delete().eq("user_id", session.user.id).neq("id", "dummy");
     setSessions((prev) => prev.map((s) => ({ ...s, archived: true })));
     setPoker(baseCapital.poker); setSports(baseCapital.sports); setHabits({ meditar: false, agua: false, omega: false, ejercicio: false }); setTilt({}); setJournal(""); setTab("dash");
   }, [sessions, session, baseCapital]);
+
+  // ── NUEVO: ELIMINACIÓN PERMANENTE ─────────────────────────────────────────
+  const deleteAllData = useCallback(async (e) => {
+    if(e) e.preventDefault();
+    if (!window.confirm("⚠️ ¡PELIGRO! ¿Estás completamente seguro de ELIMINAR TODOS TUS DATOS de forma permanente? Esto no se puede deshacer.")) return;
+    
+    await supabase.from("sessions").delete().eq("user_id", session.user.id);
+    await supabase.from("daily_habits").delete().eq("user_id", session.user.id);
+    
+    setSessions([]);
+    setPoker(baseCapital.poker);
+    setSports(baseCapital.sports);
+    setHabits({ meditar: false, agua: false, omega: false, ejercicio: false });
+    setTilt({});
+    setJournal("");
+    setTab("dash");
+    alert("Todos los datos han sido borrados de la base de datos de Supabase.");
+  }, [session, baseCapital]);
 
   const exportCSV = useCallback((e) => {
     if(e) e.preventDefault();
@@ -648,9 +681,9 @@ export default function App() {
     background: on ? color : "transparent", 
     color: on ? "#ffffff" : C.muted,
     fontSize: 13, cursor: "pointer", fontFamily: fontClean, fontWeight: "bold",
-    transition: "all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275)", // Animación de rebote sutil
-    transform: on ? "scale(1.05)" : "scale(1)", // Aumento de tamaño al activar
-    boxShadow: on ? `0 6px 12px ${color}40` : "none", // Sombra exterior tipo neón
+    transition: "all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275)",
+    transform: on ? "scale(1.05)" : "scale(1)", 
+    boxShadow: on ? `0 6px 12px ${color}40` : "none", 
     display: "flex", alignItems: "center", gap: 6,
     outline: "none"
   });
@@ -828,7 +861,7 @@ export default function App() {
             <div style={sectionLabelStyle}>Hábitos de hoy</div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 24 }}>
               {[{ k: "meditar", l: "🧘 Meditar" }, { k: "agua", l: "💧 Agua" }, { k: "omega", l: "🐟 Omega-3" }, { k: "ejercicio", l: "🏃 Ejercicio" }].map((h) => (
-                <button type="button" key={h.k} onClick={(e) => { e.preventDefault(); toggleHabit(h.k); }} style={getPillStyle(habits[h.k], C.accent)}>
+                <button type="button" key={h.k} onClick={(e) => toggleHabit(e, h.k)} style={getPillStyle(habits[h.k], C.accent)}>
                   {h.l} {habits[h.k] && <span style={{ marginLeft: 4 }}>✓</span>}
                 </button>
               ))}
@@ -845,7 +878,7 @@ export default function App() {
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
                 {TILT_QS.map((q) => (
-                  <button type="button" key={q.id} onClick={(e) => { e.preventDefault(); toggleTilt(q.id); }} style={getPillStyle(tilt[q.id], tiltColor)}>
+                  <button type="button" key={q.id} onClick={(e) => toggleTilt(e, q.id)} style={getPillStyle(tilt[q.id], tiltColor)}>
                     {q.icon} {q.label} {tilt[q.id] && <span style={{ marginLeft: 4 }}>✓</span>}
                   </button>
                 ))}
@@ -1411,8 +1444,13 @@ export default function App() {
               <button type="button" onClick={handleLogout} style={{ width: "100%", padding: 16, marginBottom: 12, borderRadius: 12, background: "transparent", border: `1px solid ${C.muted}`, color: C.textDim, fontSize: 14, cursor: "pointer", fontWeight: "600" }}>
                 CERRAR SESIÓN
               </button>
-              <button type="button" onClick={archiveAll} style={{ width: "100%", padding: 16, borderRadius: 12, background: "transparent", border: `1px solid ${C.redD}`, color: C.red, fontSize: 13, cursor: "pointer", fontWeight: "bold", marginTop: 24 }}>
-                ARCHIVAR Y RESETEAR DATOS
+
+              <button type="button" onClick={archiveAll} style={{ width: "100%", padding: 16, borderRadius: 12, background: "transparent", border: `1px solid ${C.muted}`, color: C.text, fontSize: 13, cursor: "pointer", fontWeight: "bold", marginTop: 24 }}>
+                ARCHIVAR SESIONES (Ocultar)
+              </button>
+
+              <button type="button" onClick={deleteAllData} style={{ width: "100%", padding: 16, borderRadius: 12, background: C.redD, border: `1px solid ${C.red}`, color: "#fff", fontSize: 13, cursor: "pointer", fontWeight: "bold", marginTop: 12 }}>
+                ⚠️ ELIMINAR TODO PERMANENTEMENTE
               </button>
             </div>
           </div>
