@@ -51,6 +51,31 @@ const TILT_QS = [
 
 const POSITIONS = ["UTG", "MP", "HJ", "CO", "BTN", "SB", "BB", "General"];
 
+// Tablas GTO para la sección de estudio rápido
+const GTO_TABLES = {
+  "100bb": [
+    { pos: "UTG", range: "77+, ATs+, KJs+, QJs, JTs, AQo+", notes: "10% RFI. Muy tight. Foldear AQo a 3bets." },
+    { pos: "MP", range: "55+, A8s+, KTs+, QTs+, JTs, T9s, AJo+, KQo", notes: "15% RFI. Empezar a abrir conectores suited fuertes." },
+    { pos: "CO", range: "22+, A2s+, K8s+, Q9s+, J9s+, T9s, 98s, 87s, ATo+, KJo+", notes: "25% RFI. Rango de robo medio. Atacar ciegas tight." },
+    { pos: "BTN", range: "22+, A2s+, K2s+, Q5s+, J7s+, T7s+, 97s+, 87s, 76s, A2o+, K8o+, Q9o+, J9o+", notes: "45% RFI. Máxima agresión, ventaja de posición absoluta." },
+    { pos: "SB", range: "22+, A2s+, K2s+, Q7s+, J8s+, T8s+, 98s, A2o+, KTo+, QTo+, JTo", notes: "40% RFI. Abrir o 3bet, evitar pagar pasivo fuera de posición." },
+  ],
+  "40bb": [
+    { pos: "UTG", range: "66+, ATs+, KJs+, QJs, JTs, AQo+", notes: "12% RFI. Cuidado con set mining (poca implícita)." },
+    { pos: "MP", range: "44+, A7s+, KTs+, QTs+, JTs, T9s, ATo+, KQo", notes: "17% RFI. Priorizar cartas altas sobre conectores suited." },
+    { pos: "CO", range: "22+, A2s+, K7s+, Q9s+, J9s+, T9s, ATo+, KTo+", notes: "27% RFI. Cuidado con los resteals (3bet push)." },
+    { pos: "BTN", range: "22+, A2s+, K2s+, Q2s+, J7s+, T7s+, 97s+, A2o+, K8o+, Q9o+", notes: "48% RFI. Abrir pequeño (2x-2.2x) para atacar ciegas." },
+    { pos: "SB", range: "Top 45% (Equilibrado)", notes: "Estrategia mixta: Limp con manos medias, Raise con premium/basura." },
+  ],
+  "20bb": [
+    { pos: "UTG", range: "22+, A9s+, KTs+, QJs, AJo+", notes: "Zona de Push/Fold o Min-Raise muy polarizado." },
+    { pos: "MP", range: "22+, A7s+, K9s+, QTs+, JTs, ATo+, KQo", notes: "Push directo con pares bajos y Ases medios suited." },
+    { pos: "CO", range: "22+, A2s+, K7s+, Q9s+, J9s+, T9s, A8o+, KTo+, QJo", notes: "Mucha presión a ciegas débiles. Push agresivo." },
+    { pos: "BTN", range: "22+, A2s+, K2s+, Q2s+, J7s+, T7s+, 97s+, A2o+, K8o+, Q9o+", notes: "Rango de Resteal / Push amplísimo vs aperturas previas." },
+    { pos: "SB", range: "Cualquier As, Cualquier Rey, Q2s+, J5s+, T6s+, 85s+, 22+", notes: "Empujar (All-In) a la BB casi con medio mazo si foldean todos." },
+  ]
+};
+
 const ACCENT_PRESETS = [
   { name: "Azul", v: "#3b82f6" },
   { name: "Esmeralda", v: "#10b981" },
@@ -290,7 +315,8 @@ export default function App() {
   const [showWeeklyModal, setShowWeeklyModal] = useState(false);
   const [showPreSession,  setShowPreSession]  = useState(false);
   const [preSessionNote,  setPreSessionNote]  = useState("");
-  const [analyticsView,   setAnalyticsView]   = useState("general");
+  const [analyticsView,   setAnalyticsView]   = useState("general"); 
+  const [leaksView,       setLeaksView]       = useState("registry"); // registry | gto
 
   const timerElapsedRef   = useRef(0);
   const preSessionNoteRef = useRef("");
@@ -301,7 +327,7 @@ export default function App() {
   const active   = useMemo(() => sessions.filter((x) => !x.archived),  [sessions]);
   const archived = useMemo(() => sessions.filter((x) =>  x.archived),  [sessions]);
 
-  // ── Timer Logic
+  // ── Timer Logic ───────────────────────────────────────────────────────────
   useEffect(() => {
     if (!timerActive) return;
     const id = setInterval(() => setTimerElapsed(Date.now() - timerStart), 1000);
@@ -324,7 +350,15 @@ export default function App() {
     setTimerActive(false); setTimerElapsed(0); setTimerStart(null); setPreSessionNote("");
   }, []);
 
-  // ── Auth & Load Logic
+  // NUEVO: Detiene el contador y te manda a registrar
+  const stopAndRegister = useCallback((e) => {
+    if(e) e.preventDefault();
+    if(timerActive) setTimerActive(false); // Pausa el timer
+    setTab("reg"); // Lleva a la pestaña de registro
+    setForm(prev => ({ ...prev, type: "cash", amount: "", note: preSessionNoteRef.current ? `Foco: ${preSessionNoteRef.current}` : "" }));
+  }, [timerActive]);
+
+  // ── Auth & Load Logic ─────────────────────────────────────────────────────
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
@@ -469,12 +503,19 @@ export default function App() {
       setSessions((prev) => [data[0], ...prev]);
       if (form.type === "sports") setSports((p) => parseFloat((p + value).toFixed(2)));
       else                        setPoker((p)  => parseFloat((p + value).toFixed(2)));
+      
       setForm((f) => ({ ...f, amount: "", note: "", rating: 0 }));
-      setFlash(value > 0 ? "win" : "loss"); setTimeout(() => setFlash(null), 900); setTab("dash");
+      setFlash(value > 0 ? "win" : "loss"); 
+      setTimeout(() => setFlash(null), 900); 
+      setTab("dash");
+      
+      // Resetea el timer a 0 ahora que ya se guardó la duración
+      resetTimer();
+
       if (form.type === "cash" && value <= -6) sendAlert("⚠️ STOP LOSS", "3 buy-ins perdidos. Cierra la mesa.");
       if (form.type === "cash" && value >= 10)  sendAlert("🏆 Buena sesión", "Protege las ganancias.");
     }
-  }, [form, session, sendAlert]);
+  }, [form, session, sendAlert, resetTimer]);
 
   const addLeak = useCallback(async (e) => {
     if(e) e.preventDefault();
@@ -488,33 +529,18 @@ export default function App() {
     }
   }, [leakForm, session]);
 
-  // ── FIX: ACTUALIZACIÓN OPTIMISTA PARA HÁBITOS Y TILT ──────────────────────
   const toggleHabit = useCallback(async (e, k) => {
-    e.preventDefault();
-    e.stopPropagation();
+    e.preventDefault(); e.stopPropagation();
     const nextStatus = !habits[k];
-    
-    // UI Instantánea
     setHabits((prev) => ({ ...prev, [k]: nextStatus }));
-    
-    // Guardado en segundo plano
-    supabase.from("daily_habits")
-      .upsert({ id: k, user_id: session.user.id, status: nextStatus })
-      .then(({ error }) => { if (error) console.error("Error BD:", error); });
+    supabase.from("daily_habits").upsert({ id: k, user_id: session.user.id, status: nextStatus }).catch(console.error);
   }, [habits, session]);
 
   const toggleTilt = useCallback(async (e, k) => {
-    e.preventDefault();
-    e.stopPropagation();
+    e.preventDefault(); e.stopPropagation();
     const nextStatus = !tilt[k];
-    
-    // UI Instantánea
     setTilt((prev) => ({ ...prev, [k]: nextStatus }));
-    
-    // Guardado en segundo plano
-    supabase.from("daily_habits")
-      .upsert({ id: `tilt_${k}`, user_id: session.user.id, status: nextStatus })
-      .then(({ error }) => { if (error) console.error("Error BD:", error); });
+    supabase.from("daily_habits").upsert({ id: `tilt_${k}`, user_id: session.user.id, status: nextStatus }).catch(console.error);
   }, [tilt, session]);
 
   const saveJournal = useCallback(async (e) => {
@@ -533,21 +559,12 @@ export default function App() {
     setPoker(baseCapital.poker); setSports(baseCapital.sports); setHabits({ meditar: false, agua: false, omega: false, ejercicio: false }); setTilt({}); setJournal(""); setTab("dash");
   }, [sessions, session, baseCapital]);
 
-  // ── NUEVO: ELIMINACIÓN PERMANENTE ─────────────────────────────────────────
   const deleteAllData = useCallback(async (e) => {
     if(e) e.preventDefault();
     if (!window.confirm("⚠️ ¡PELIGRO! ¿Estás completamente seguro de ELIMINAR TODOS TUS DATOS de forma permanente? Esto no se puede deshacer.")) return;
-    
     await supabase.from("sessions").delete().eq("user_id", session.user.id);
     await supabase.from("daily_habits").delete().eq("user_id", session.user.id);
-    
-    setSessions([]);
-    setPoker(baseCapital.poker);
-    setSports(baseCapital.sports);
-    setHabits({ meditar: false, agua: false, omega: false, ejercicio: false });
-    setTilt({});
-    setJournal("");
-    setTab("dash");
+    setSessions([]); setPoker(baseCapital.poker); setSports(baseCapital.sports); setHabits({ meditar: false, agua: false, omega: false, ejercicio: false }); setTilt({}); setJournal(""); setTab("dash");
     alert("Todos los datos han sido borrados de la base de datos de Supabase.");
   }, [session, baseCapital]);
 
@@ -674,7 +691,6 @@ export default function App() {
 
   const inputStyle = { ...INPUT_STYLE_BASE, border: `1px solid ${C.border}`, background: C.surface, color: C.text };
 
-  // MEJORA VISUAL EN LOS BOTONES DE HÁBITOS
   const getPillStyle = (on, color) => ({
     padding: "10px 18px", borderRadius: 12, 
     border: `2px solid ${on ? color : C.border}`,
@@ -709,6 +725,9 @@ export default function App() {
   const sectionLabelStyle = {
     fontSize: 12, fontWeight: "600", color: C.muted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 16, fontFamily: fontClean
   };
+
+  // Estado para la sub-pestaña de Leaks (Registro vs Tabla GTO)
+  const [gtoDepth, setGtoDepth] = useState("100bb");
 
   // ─── LOGIN SCREEN ────────────────────────────────────────────────────────
 
@@ -838,22 +857,32 @@ export default function App() {
             </div>
           )}
 
-          {/* Timer Card */}
-          <div style={{ ...cardStyle, border: `1px solid ${timerActive ? C.accentMid : C.border}`, display: "flex", alignItems: "center", gap: 16 }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ ...sectionLabelStyle, marginBottom: 8 }}>Sesión activa</div>
-              <div style={{ fontSize: 32, fontWeight: "bold", color: timerActive ? C.accent : C.muted, fontFamily: "monospace" }}>
-                {fmtElapsed(timerElapsed)}
+          {/* Timer Card (CON BOTÓN DE FINALIZAR Y REGISTRAR) */}
+          <div style={{ ...cardStyle, border: `1px solid ${timerActive ? C.accentMid : C.border}` }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: timerElapsed > 0 ? 16 : 0 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ ...sectionLabelStyle, marginBottom: 8 }}>Sesión activa</div>
+                <div style={{ fontSize: 32, fontWeight: "bold", color: timerActive ? C.accent : C.muted, fontFamily: "monospace" }}>
+                  {fmtElapsed(timerElapsed)}
+                </div>
+                {preSessionNote && <div style={{ fontSize: 13, color: C.accent, marginTop: 6, fontWeight: "500" }}>🎯 {preSessionNote}</div>}
+                {timerElapsed > 0 && !timerActive && !preSessionNote && <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>Pausado</div>}
               </div>
-              {preSessionNote && <div style={{ fontSize: 13, color: C.accent, marginTop: 6, fontWeight: "500" }}>🎯 {preSessionNote}</div>}
-              {timerElapsed > 0 && !timerActive && !preSessionNote && <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>Pausado</div>}
+              <div style={{ display: "flex", gap: 8 }}>
+                <button type="button" onClick={toggleTimer} style={{ padding: "14px 20px", borderRadius: 12, border: `1px solid ${timerActive ? C.accent : C.border}`, background: timerActive ? C.accentDim : C.surface, color: timerActive ? C.accent : C.text, fontSize: 14, cursor: "pointer", fontWeight: "bold" }}>
+                  {timerActive ? "⏸ Pausa" : timerElapsed > 0 ? "▶ Reanudar" : "▶ Iniciar"}
+                </button>
+                {timerElapsed > 0 && <button type="button" onClick={resetTimer} style={{ padding: "14px 16px", borderRadius: 12, border: `1px solid ${C.border}`, background: C.surface, color: C.muted, fontSize: 14, cursor: "pointer" }}>✕</button>}
+              </div>
             </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button type="button" onClick={toggleTimer} style={{ padding: "14px 20px", borderRadius: 12, border: `1px solid ${timerActive ? C.accent : C.border}`, background: timerActive ? C.accentDim : C.surface, color: timerActive ? C.accent : C.text, fontSize: 14, cursor: "pointer", fontWeight: "bold" }}>
-                {timerActive ? "⏸ Pausa" : timerElapsed > 0 ? "▶ Reanudar" : "▶ Iniciar"}
+            
+            {/* BOTÓN NUEVO PARA FINALIZAR SESIÓN */}
+            {timerElapsed > 0 && (
+              <button type="button" onClick={stopAndRegister} 
+                style={{ width: "100%", padding: "14px", borderRadius: 10, border: `1px solid ${C.accent}`, background: C.accentDim, color: C.accent, fontSize: 14, cursor: "pointer", fontWeight: "bold", letterSpacing: 1 }}>
+                🏁 FINALIZAR Y REGISTRAR
               </button>
-              {timerElapsed > 0 && <button type="button" onClick={resetTimer} style={{ padding: "14px 16px", borderRadius: 12, border: `1px solid ${C.border}`, background: C.surface, color: C.muted, fontSize: 14, cursor: "pointer" }}>✕</button>}
-            </div>
+            )}
           </div>
 
           {/* Tilt + Hábitos */}
@@ -958,6 +987,13 @@ export default function App() {
                   style={{ marginLeft: "auto", fontSize: 12, padding: "6px 14px", borderRadius: 8, border: `1px solid ${C.gold}55`, background: C.gold + "22", color: C.gold, cursor: "pointer", fontWeight: "bold" }}>
                   Usar
                 </button>
+              </div>
+            )}
+
+            {/* Aviso de que se usará el tiempo del cronómetro */}
+            {timerElapsedRef.current > 0 && form.type !== "sports" && (
+              <div style={{ padding: "10px 14px", background: C.accentDim, border: `1px solid ${C.accent}44`, borderRadius: 10, marginBottom: 16, fontSize: 13, color: C.accent, fontWeight: "500" }}>
+                ⏱ Se asociará un tiempo de <strong>{fmtElapsed(timerElapsedRef.current)}</strong> a este registro para calcular tu Rentabilidad por Hora (BB/100).
               </div>
             )}
 
@@ -1166,7 +1202,7 @@ export default function App() {
               </div>
             )}
 
-            {/* ANALÍTICAS DEPORTIVAS (NUEVO) */}
+            {/* ANALÍTICAS DEPORTIVAS */}
             {analyticsView === "sports" && <>
               <div style={cardStyle}>
                 <div style={{ ...sectionLabelStyle, color: C.accent }}>Últimas 7 apuestas</div>
@@ -1229,51 +1265,93 @@ export default function App() {
         )}
 
         {/* ══════════════════════════════════════════════════════════════
-            SPOTS & LEAKS
+            SPOTS & LEAKS (AHORA CON PESTAÑA GTO)
         ══════════════════════════════════════════════════════════════ */}
         {tab === "leaks" && (
           <div>
-            <div style={cardStyle}>
-              <div style={{ ...sectionLabelStyle, color: C.gold }}>Registrar leak / error</div>
-              <div style={{ fontSize: 12, color: C.muted, marginBottom: 10, fontWeight: "500" }}>Posición</div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
-                {POSITIONS.map((p) => (
-                  <button type="button" key={p} onClick={(e) => { e.preventDefault(); setLeakForm({ ...leakForm, position: p }); }}
-                    style={{ padding: "8px 14px", borderRadius: 10, border: `1px solid ${leakForm.position === p ? C.gold : C.border}`, background: leakForm.position === p ? C.gold + "22" : C.surface, color: leakForm.position === p ? C.gold : C.text, fontSize: 13, cursor: "pointer", fontWeight: "600" }}>
-                    {p}
-                  </button>
-                ))}
-              </div>
-              <textarea
-                placeholder="Describe el error... ej: Pagué 3bet OOP con AJo"
-                value={leakForm.note} onChange={(e) => setLeakForm({ ...leakForm, note: e.target.value })}
-                style={{ ...inputStyle, minHeight: 100, resize: "none", lineHeight: 1.6, marginBottom: 20 }}
-              />
-              <button type="button" onClick={addLeak} style={{ width: "100%", padding: 16, borderRadius: 12, border: "none", cursor: "pointer", background: C.gold + "22", color: C.gold, fontSize: 15, fontWeight: "bold", letterSpacing: 1 }}>
-                GUARDAR LEAK
+            <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+              <button type="button" onClick={() => setLeaksView("registry")}
+                style={{ flex: 1, padding: "12px", borderRadius: 10, border: `1px solid ${leaksView === "registry" ? C.gold : C.border}`, background: leaksView === "registry" ? C.gold + "22" : C.card, color: leaksView === "registry" ? C.gold : C.muted, fontSize: 13, cursor: "pointer", fontWeight: "bold" }}>
+                Mis Leaks
+              </button>
+              <button type="button" onClick={() => setLeaksView("gto")}
+                style={{ flex: 1, padding: "12px", borderRadius: 10, border: `1px solid ${leaksView === "gto" ? C.accent : C.border}`, background: leaksView === "gto" ? C.accentDim : C.card, color: leaksView === "gto" ? C.accent : C.muted, fontSize: 13, cursor: "pointer", fontWeight: "bold" }}>
+                Tablas GTO (Estudio)
               </button>
             </div>
 
-            <div style={{ ...cardStyle, background: C.surface, border: "none" }}>
-              <div style={{ ...sectionLabelStyle, marginBottom: 12 }}>
-                Áreas de mejora ({leakSessions.length})
-              </div>
-              {leakSessions.map((s) => (
-                <div key={s.id} style={{ display: "flex", gap: 16, padding: "16px 0", borderBottom: `1px solid ${C.border}` }}>
-                  <div style={{ background: C.card, border: `1px solid ${C.border}`, color: leakAlerts.some((a) => a.pos === (s.buyin || "GNRL")) ? C.red : C.gold, padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: "bold", whiteSpace: "nowrap", height: "fit-content", marginTop: 2 }}>
-                    {s.buyin || "GNRL"}
-                    {leakAlerts.some((a) => a.pos === (s.buyin || "GNRL")) && " ⚑"}
+            {leaksView === "registry" && (
+              <>
+                <div style={cardStyle}>
+                  <div style={{ ...sectionLabelStyle, color: C.gold }}>Registrar leak / error</div>
+                  <div style={{ fontSize: 12, color: C.muted, marginBottom: 10, fontWeight: "500" }}>Posición</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
+                    {POSITIONS.map((p) => (
+                      <button type="button" key={p} onClick={(e) => { e.preventDefault(); setLeakForm({ ...leakForm, position: p }); }}
+                        style={{ padding: "8px 14px", borderRadius: 10, border: `1px solid ${leakForm.position === p ? C.gold : C.border}`, background: leakForm.position === p ? C.gold + "22" : C.surface, color: leakForm.position === p ? C.gold : C.text, fontSize: 13, cursor: "pointer", fontWeight: "600" }}>
+                        {p}
+                      </button>
+                    ))}
                   </div>
-                  <div>
-                    <div style={{ fontSize: 14, color: C.text, lineHeight: 1.6 }}>{s.note}</div>
-                    <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>{s.date}</div>
+                  <textarea
+                    placeholder="Describe el error... ej: Pagué 3bet OOP con AJo"
+                    value={leakForm.note} onChange={(e) => setLeakForm({ ...leakForm, note: e.target.value })}
+                    style={{ ...inputStyle, minHeight: 100, resize: "none", lineHeight: 1.6, marginBottom: 20 }}
+                  />
+                  <button type="button" onClick={addLeak} style={{ width: "100%", padding: 16, borderRadius: 12, border: "none", cursor: "pointer", background: C.gold + "22", color: C.gold, fontSize: 15, fontWeight: "bold", letterSpacing: 1 }}>
+                    GUARDAR LEAK
+                  </button>
+                </div>
+
+                <div style={{ ...cardStyle, background: C.surface, border: "none" }}>
+                  <div style={{ ...sectionLabelStyle, marginBottom: 12 }}>
+                    Áreas de mejora ({leakSessions.length})
+                  </div>
+                  {leakSessions.map((s) => (
+                    <div key={s.id} style={{ display: "flex", gap: 16, padding: "16px 0", borderBottom: `1px solid ${C.border}` }}>
+                      <div style={{ background: C.card, border: `1px solid ${C.border}`, color: leakAlerts.some((a) => a.pos === (s.buyin || "GNRL")) ? C.red : C.gold, padding: "6px 12px", borderRadius: 8, fontSize: 12, fontWeight: "bold", whiteSpace: "nowrap", height: "fit-content", marginTop: 2 }}>
+                        {s.buyin || "GNRL"}
+                        {leakAlerts.some((a) => a.pos === (s.buyin || "GNRL")) && " ⚑"}
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 14, color: C.text, lineHeight: 1.6 }}>{s.note}</div>
+                        <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>{s.date}</div>
+                      </div>
+                    </div>
+                  ))}
+                  {leakSessions.length === 0 && (
+                    <div style={{ textAlign: "center", color: C.muted, padding: "32px 0", fontSize: 14 }}>Sin leaks registrados. ¡Excelente!</div>
+                  )}
+                </div>
+              </>
+            )}
+
+            {leaksView === "gto" && (
+              <div style={{ ...cardStyle, padding: 0, overflow: "hidden" }}>
+                <div style={{ padding: "20px 20px 10px" }}>
+                  <div style={{ ...sectionLabelStyle, color: C.accent, marginBottom: 16 }}>Rangos RFI y Push/Fold preflop</div>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+                    <button type="button" onClick={() => setGtoDepth("100bb")} style={{ flex: 1, padding: "10px 4px", borderRadius: 8, border: `1px solid ${gtoDepth === "100bb" ? C.accent : C.border}`, background: gtoDepth === "100bb" ? C.accentDim : C.surface, color: gtoDepth === "100bb" ? C.accent : C.muted, fontSize: 12, fontWeight: "bold" }}>100BB (Cash)</button>
+                    <button type="button" onClick={() => setGtoDepth("40bb")} style={{ flex: 1, padding: "10px 4px", borderRadius: 8, border: `1px solid ${gtoDepth === "40bb" ? C.accent : C.border}`, background: gtoDepth === "40bb" ? C.accentDim : C.surface, color: gtoDepth === "40bb" ? C.accent : C.muted, fontSize: 12, fontWeight: "bold" }}>40-50BB</button>
+                    <button type="button" onClick={() => setGtoDepth("20bb")} style={{ flex: 1, padding: "10px 4px", borderRadius: 8, border: `1px solid ${gtoDepth === "20bb" ? C.accent : C.border}`, background: gtoDepth === "20bb" ? C.accentDim : C.surface, color: gtoDepth === "20bb" ? C.accent : C.muted, fontSize: 12, fontWeight: "bold" }}>15-20BB</button>
                   </div>
                 </div>
-              ))}
-              {leakSessions.length === 0 && (
-                <div style={{ textAlign: "center", color: C.muted, padding: "32px 0", fontSize: 14 }}>Sin leaks registrados. ¡Excelente!</div>
-              )}
-            </div>
+                
+                <div style={{ background: C.surface }}>
+                  {GTO_TABLES[gtoDepth].map((row, idx) => (
+                    <div key={row.pos} style={{ padding: "16px 20px", borderTop: `1px solid ${C.border}`, display: "flex", gap: 16 }}>
+                      <div style={{ width: 44, height: "fit-content", background: C.card, border: `1px solid ${C.border}`, color: C.text, padding: "6px 0", borderRadius: 8, fontSize: 12, fontWeight: "bold", textAlign: "center" }}>
+                        {row.pos}
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 14, color: C.accent, fontWeight: "bold", marginBottom: 6, lineHeight: 1.4 }}>{row.range}</div>
+                        <div style={{ fontSize: 12, color: C.textDim, lineHeight: 1.5 }}>{row.notes}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
