@@ -91,24 +91,24 @@ const groupByDate = (arr) => {
 const getTodayStr = () => new Date().toLocaleDateString("es-MX", { day: "2-digit", month: "short" });
 const getMonthStr = () => new Date().toLocaleDateString("es-MX", { month: "short" });
 
-// ─── COLOR SYSTEM (Más vivo y claro) ────────────────────────────────────────
+// ─── COLOR SYSTEM ────────────────────────────────────────
 
 const makeC = (accent = "#3b82f6") => ({
-  bg: "#0d1117",          // Fondo principal un poco más claro, menos negro
-  surface: "#161b22",     // Superficies más grises
-  card: "#1e242e",        // Tarjetas con mejor contraste
-  border: "#30363d",      // Bordes visibles pero sutiles
-  green: "#10b981",       // Verde esmeralda brillante
+  bg: "#0d1117",
+  surface: "#161b22",
+  card: "#1e242e",
+  border: "#30363d",
+  green: "#10b981",
   greenD: "#065f46", 
-  red: "#ef4444",         // Rojo vivo
+  red: "#ef4444",
   redD: "#7f1d1d",
   accent, 
-  accentDim: accent + "25", // Menos opaco
+  accentDim: accent + "25",
   accentMid: accent + "50",
-  gold: "#f59e0b",        // Dorado brillante
+  gold: "#f59e0b",
   goldD: "#78350f",
-  muted: "#8b949e",       // Textos secundarios mucho más legibles
-  text: "#f0f6fc",        // Texto principal súper blanco
+  muted: "#8b949e",
+  text: "#f0f6fc",
   textDim: "#c9d1d9",
 });
 
@@ -130,7 +130,7 @@ const INPUT_STYLE_BASE = {
 const StarRating = ({ value, onChange, C }) => (
   <div style={{ display: "flex", gap: 6 }}>
     {[1, 2, 3, 4, 5].map((n) => (
-      <button key={n} type="button" onClick={() => onChange(n === value ? 0 : n)}
+      <button key={n} type="button" onClick={(e) => { e.preventDefault(); onChange(n === value ? 0 : n); }}
         style={{ background: "none", border: "none", cursor: "pointer", fontSize: 26,
           color: n <= value ? C.gold : C.border, padding: "0", lineHeight: 1 }}>
         ★
@@ -159,7 +159,7 @@ const HeatmapCalendar = ({ sessions, monthStr, C }) => {
 
   const getColor = (day) => {
     const p = profitByDay[day];
-    if (p === undefined) return C.surface; // Celdas vacías más limpias
+    if (p === undefined) return C.surface; 
     const intensity = Math.min(Math.abs(p) / maxAbs, 1);
     const alpha = Math.round(intensity * 155 + 100).toString(16).padStart(2, "0");
     return p >= 0 ? `${C.green}${alpha}` : `${C.red}${alpha}`;
@@ -296,7 +296,7 @@ export default function App() {
   const [showWeeklyModal, setShowWeeklyModal] = useState(false);
   const [showPreSession,  setShowPreSession]  = useState(false);
   const [preSessionNote,  setPreSessionNote]  = useState("");
-  const [analyticsView,   setAnalyticsView]   = useState("general");
+  const [analyticsView,   setAnalyticsView]   = useState("general"); // general | months | tournaments | sports
 
   const timerElapsedRef   = useRef(0);
   const preSessionNoteRef = useRef("");
@@ -314,7 +314,8 @@ export default function App() {
     return () => clearInterval(id);
   }, [timerActive, timerStart]);
 
-  const toggleTimer = useCallback(() => {
+  const toggleTimer = useCallback((e) => {
+    if(e) e.preventDefault();
     if (timerActive) setTimerActive(false);
     else if (timerElapsed > 0) { setTimerStart(Date.now() - timerElapsed); setTimerActive(true); }
     else setShowPreSession(true);
@@ -324,7 +325,8 @@ export default function App() {
     setPreSessionNote(note); setTimerStart(Date.now()); setTimerActive(true); setShowPreSession(false);
   }, []);
 
-  const resetTimer = useCallback(() => {
+  const resetTimer = useCallback((e) => {
+    if(e) e.preventDefault();
     setTimerActive(false); setTimerElapsed(0); setTimerStart(null); setPreSessionNote("");
   }, []);
 
@@ -343,7 +345,7 @@ export default function App() {
     } catch (err) { alert(err.message); } finally { setAuthLoading(false); }
   }, [isLogin, authEmail, authPassword]);
 
-  const handleLogout = useCallback(async () => { await supabase.auth.signOut(); setSessions([]); setLoaded(false); }, []);
+  const handleLogout = useCallback(async (e) => { if(e) e.preventDefault(); await supabase.auth.signOut(); setSessions([]); setLoaded(false); }, []);
 
   const sendAlert = useCallback(async (title, body) => {
     if ("serviceWorker" in navigator && Notification.permission === "granted") {
@@ -351,7 +353,8 @@ export default function App() {
     }
   }, []);
 
-  const requestNotificationPermission = useCallback(async () => {
+  const requestNotificationPermission = useCallback(async (e) => {
+    if(e) e.preventDefault();
     if (!("Notification" in window)) { alert("Tu navegador no soporta notificaciones."); return; }
     const perm = await Notification.requestPermission();
     if (perm === "granted") { setPushStatus("Activas"); sendAlert("♠️ Diego's Edge", "Alertas activadas."); } else setPushStatus("Denegado");
@@ -439,7 +442,8 @@ export default function App() {
     localStorage.setItem(key, "1"); setShowWeeklyModal(true);
   }, [loaded, session]);
 
-  const saveConfig = useCallback(async () => {
+  const saveConfig = useCallback(async (e) => {
+    if(e) e.preventDefault();
     await supabase.auth.updateUser({ data: { base_capital: baseCapital, accent, monthly_goal: monthlyGoal } });
     load(); sendAlert("⚙️ Config guardada", "Capital y tema actualizados.");
   }, [baseCapital, accent, monthlyGoal, load, sendAlert]);
@@ -453,11 +457,12 @@ export default function App() {
     });
   }, []);
 
-  const addSession = useCallback(async () => {
+  const addSession = useCallback(async (e) => {
+    if(e) e.preventDefault();
     const amt = parseFloat(form.amount); if (!amt || amt <= 0) return;
     const value = form.result === "win" ? amt : -amt;
     const payload = {
-      id: Date.now(), // <--- SOLUCIÓN DEL ERROR AQUÍ
+      id: Date.now(), 
       user_id: session.user.id, type: form.type, amount: value, note: form.note,
       date: getTodayStr(), archived: false, rating: form.rating || 0,
       duration: timerElapsedRef.current || 0, pre_note: preSessionNoteRef.current || "",
@@ -477,9 +482,10 @@ export default function App() {
     }
   }, [form, session, sendAlert]);
 
-  const addLeak = useCallback(async () => {
+  const addLeak = useCallback(async (e) => {
+    if(e) e.preventDefault();
     if (!leakForm.note.trim()) return;
-    const payload = { id: Date.now(), user_id: session.user.id, type: "leak", amount: 0, note: leakForm.note, buyin: leakForm.position, date: getTodayStr(), archived: false }; // <--- Y AQUÍ
+    const payload = { id: Date.now(), user_id: session.user.id, type: "leak", amount: 0, note: leakForm.note, buyin: leakForm.position, date: getTodayStr(), archived: false }; 
     const { data, error } = await supabase.from("sessions").insert([payload]).select();
     if (error) { alert(`Error: ${error.message}`); return; }
     if (data && data.length > 0) {
@@ -496,12 +502,14 @@ export default function App() {
     setTilt((prev) => { const next = !prev[k]; supabase.from("daily_habits").upsert({ id: `tilt_${k}`, user_id: session.user.id, status: next }).catch(console.error); return { ...prev, [k]: next }; });
   }, [session]);
 
-  const saveJournal = useCallback(async () => {
+  const saveJournal = useCallback(async (e) => {
+    if(e) e.preventDefault();
     await supabase.from("daily_habits").upsert({ id: "journal", user_id: session.user.id, status: false, note: journal });
     setJournalSaved(true); setTimeout(() => setJournalSaved(false), 2000);
   }, [session, journal]);
 
-  const archiveAll = useCallback(async () => {
+  const archiveAll = useCallback(async (e) => {
+    if(e) e.preventDefault();
     if (!window.confirm("¿Archivar todos los datos y empezar desde cero?")) return;
     const activeIds = sessions.filter((s) => !s.archived).map((s) => s.id);
     if (activeIds.length > 0) await supabase.from("sessions").update({ archived: true }).in("id", activeIds);
@@ -510,7 +518,8 @@ export default function App() {
     setPoker(baseCapital.poker); setSports(baseCapital.sports); setHabits({ meditar: false, agua: false, omega: false, ejercicio: false }); setTilt({}); setJournal(""); setTab("dash");
   }, [sessions, session, baseCapital]);
 
-  const exportCSV = useCallback(() => {
+  const exportCSV = useCallback((e) => {
+    if(e) e.preventDefault();
     const header = "Fecha,Tipo,Monto,Nota,Rating,Duración(min),Foco previo\n";
     const rows = active.filter((x) => x.type !== "leak").map((s) => [s.date, s.type, s.amount, `"${(s.note || "").replace(/"/g, "'")}"`, s.rating || 0, s.duration ? Math.round(s.duration / 60000) : 0, `"${(s.pre_note || "").replace(/"/g, "'")}"`].join(",")).join("\n");
     const blob = new Blob([header + rows], { type: "text/csv;charset=utf-8;" });
@@ -550,11 +559,21 @@ export default function App() {
     return pts;
   }, [sportsSessions, baseCapital.sports]);
 
+  // Poker Analytics
   const last7 = useMemo(() => [...pokerSessions].slice(0, 7).reverse().map((s) => ({ value: s.amount, label: s.date.replace(/\s/g, "\n") })), [pokerSessions]);
   const pokerAmounts  = useMemo(() => pokerSessions.map((s) => s.amount), [pokerSessions]);
   const bestSession   = useMemo(() => pokerAmounts.length ? Math.max(...pokerAmounts) : 0, [pokerAmounts]);
   const worstSession  = useMemo(() => pokerAmounts.length ? Math.min(...pokerAmounts) : 0, [pokerAmounts]);
   const avgSession    = useMemo(() => pokerAmounts.length ? pokerAmounts.reduce((a, b) => a + b, 0) / pokerAmounts.length : 0, [pokerAmounts]);
+
+  // Sports Analytics
+  const sportsAmounts = useMemo(() => sportsSessions.map((s) => s.amount), [sportsSessions]);
+  const sportsWins    = useMemo(() => sportsSessions.filter((x) => x.amount > 0).length, [sportsSessions]);
+  const sportsWinRate = sportsSessions.length ? Math.round((sportsWins / sportsSessions.length) * 100) : 0;
+  const sportsBest    = sportsAmounts.length ? Math.max(...sportsAmounts) : 0;
+  const sportsWorst   = sportsAmounts.length ? Math.min(...sportsAmounts) : 0;
+  const sportsAvg     = sportsAmounts.length ? sportsAmounts.reduce((a, b) => a + b, 0) / sportsAmounts.length : 0;
+  const last7Sports   = useMemo(() => [...sportsSessions].slice(0, 7).reverse().map((s) => ({ value: s.amount, label: s.date.replace(/\s/g, "\n") })), [sportsSessions]);
 
   const monthStr = getMonthStr();
   const thisMonthSessions = useMemo(() => pokerSessions.filter((s) => s.date.includes(monthStr)), [pokerSessions, monthStr]);
@@ -587,6 +606,16 @@ export default function App() {
     return Object.entries(months).map(([month, d]) => ({ month, sessions: d.sessions, profit: parseFloat(d.profit.toFixed(2)), winRate: d.sessions ? Math.round((d.wins / d.sessions) * 100) : 0 })).reverse();
   }, [pokerSessions]);
 
+  const sportsMonthlyBreakdown = useMemo(() => {
+    const months = {};
+    [...sportsSessions].reverse().forEach((s) => {
+      const parts = s.date.split(" "); const m = parts[1] || "?";
+      if (!months[m]) months[m] = { sessions: 0, profit: 0, wins: 0 };
+      months[m].sessions++; months[m].profit += s.amount; if (s.amount > 0) months[m].wins++;
+    });
+    return Object.entries(months).map(([month, d]) => ({ month, sessions: d.sessions, profit: parseFloat(d.profit.toFixed(2)), winRate: d.sessions ? Math.round((d.wins / d.sessions) * 100) : 0 })).reverse();
+  }, [sportsSessions]);
+
   const tournamentROI = useMemo(() => {
     if (!tournamentSessions.length) return null;
     const total = tournamentSessions.length, wins = tournamentSessions.filter((s) => s.amount > 0).length;
@@ -612,10 +641,18 @@ export default function App() {
 
   const inputStyle = { ...INPUT_STYLE_BASE, border: `1px solid ${C.border}`, background: C.surface, color: C.text };
 
+  // MEJORA VISUAL EN LOS BOTONES DE HÁBITOS
   const getPillStyle = (on, color) => ({
-    padding: "8px 16px", borderRadius: 24, border: `1px solid ${on ? color : C.border}`,
-    background: on ? color + "22" : "transparent", color: on ? color : C.muted,
-    fontSize: 13, cursor: "pointer", fontFamily: fontClean, fontWeight: "500", transition: "all 0.2s",
+    padding: "10px 18px", borderRadius: 12, 
+    border: `2px solid ${on ? color : C.border}`,
+    background: on ? color : "transparent", 
+    color: on ? "#ffffff" : C.muted,
+    fontSize: 13, cursor: "pointer", fontFamily: fontClean, fontWeight: "bold",
+    transition: "all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275)", // Animación de rebote sutil
+    transform: on ? "scale(1.05)" : "scale(1)", // Aumento de tamaño al activar
+    boxShadow: on ? `0 6px 12px ${color}40` : "none", // Sombra exterior tipo neón
+    display: "flex", alignItems: "center", gap: 6,
+    outline: "none"
   });
 
   const getTypeBtnStyle = (v) => ({
@@ -779,20 +816,20 @@ export default function App() {
               {timerElapsed > 0 && !timerActive && !preSessionNote && <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>Pausado</div>}
             </div>
             <div style={{ display: "flex", gap: 8 }}>
-              <button onClick={toggleTimer} style={{ padding: "14px 20px", borderRadius: 12, border: `1px solid ${timerActive ? C.accent : C.border}`, background: timerActive ? C.accentDim : C.surface, color: timerActive ? C.accent : C.text, fontSize: 14, cursor: "pointer", fontWeight: "bold" }}>
+              <button type="button" onClick={toggleTimer} style={{ padding: "14px 20px", borderRadius: 12, border: `1px solid ${timerActive ? C.accent : C.border}`, background: timerActive ? C.accentDim : C.surface, color: timerActive ? C.accent : C.text, fontSize: 14, cursor: "pointer", fontWeight: "bold" }}>
                 {timerActive ? "⏸ Pausa" : timerElapsed > 0 ? "▶ Reanudar" : "▶ Iniciar"}
               </button>
-              {timerElapsed > 0 && <button onClick={resetTimer} style={{ padding: "14px 16px", borderRadius: 12, border: `1px solid ${C.border}`, background: C.surface, color: C.muted, fontSize: 14, cursor: "pointer" }}>✕</button>}
+              {timerElapsed > 0 && <button type="button" onClick={resetTimer} style={{ padding: "14px 16px", borderRadius: 12, border: `1px solid ${C.border}`, background: C.surface, color: C.muted, fontSize: 14, cursor: "pointer" }}>✕</button>}
             </div>
           </div>
 
           {/* Tilt + Hábitos */}
           <div style={cardStyle}>
             <div style={sectionLabelStyle}>Hábitos de hoy</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 24 }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 24 }}>
               {[{ k: "meditar", l: "🧘 Meditar" }, { k: "agua", l: "💧 Agua" }, { k: "omega", l: "🐟 Omega-3" }, { k: "ejercicio", l: "🏃 Ejercicio" }].map((h) => (
-                <button key={h.k} onClick={() => toggleHabit(h.k)} style={getPillStyle(habits[h.k], C.accent)}>
-                  {habits[h.k] ? "✓ " : ""}{h.l}
+                <button type="button" key={h.k} onClick={(e) => { e.preventDefault(); toggleHabit(h.k); }} style={getPillStyle(habits[h.k], C.accent)}>
+                  {h.l} {habits[h.k] && <span style={{ marginLeft: 4 }}>✓</span>}
                 </button>
               ))}
             </div>
@@ -806,10 +843,10 @@ export default function App() {
               <div style={{ height: 6, background: C.surface, borderRadius: 6, marginBottom: 16, overflow: "hidden" }}>
                 <div style={{ height: "100%", width: `${(tiltScore / TILT_QS.length) * 100}%`, background: tiltColor, borderRadius: 6, transition: "width 0.4s ease" }} />
               </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
                 {TILT_QS.map((q) => (
-                  <button key={q.id} onClick={() => toggleTilt(q.id)} style={getPillStyle(tilt[q.id], tiltColor)}>
-                    {tilt[q.id] ? "✓ " : ""}{q.icon} {q.label}
+                  <button type="button" key={q.id} onClick={(e) => { e.preventDefault(); toggleTilt(q.id); }} style={getPillStyle(tilt[q.id], tiltColor)}>
+                    {q.icon} {q.label} {tilt[q.id] && <span style={{ marginLeft: 4 }}>✓</span>}
                   </button>
                 ))}
               </div>
@@ -855,7 +892,7 @@ export default function App() {
               onChange={(e) => { setJournal(e.target.value); setJournalSaved(false); }}
               style={{ width: "100%", padding: "14px 16px", borderRadius: 12, border: `1px solid ${C.border}`, background: C.surface, color: C.text, fontSize: 14, fontFamily: fontClean, boxSizing: "border-box", outline: "none", minHeight: 90, resize: "none", lineHeight: 1.6 }}
             />
-            <button onClick={saveJournal} style={{ marginTop: 12, padding: "10px 20px", borderRadius: 10, border: `1px solid ${journalSaved ? C.green : C.border}`, background: journalSaved ? C.greenD + "44" : C.surface, color: journalSaved ? C.green : C.text, fontSize: 13, cursor: "pointer", fontWeight: "600", transition: "all 0.3s" }}>
+            <button type="button" onClick={saveJournal} style={{ marginTop: 12, padding: "10px 20px", borderRadius: 10, border: `1px solid ${journalSaved ? C.green : C.border}`, background: journalSaved ? C.greenD + "44" : C.surface, color: journalSaved ? C.green : C.text, fontSize: 13, cursor: "pointer", fontWeight: "600", transition: "all 0.3s" }}>
               {journalSaved ? "✓ Guardado" : "Guardar nota"}
             </button>
           </div>
@@ -871,20 +908,20 @@ export default function App() {
 
             <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
               {[["cash", "Cash NL2"], ["tournament", "Torneo"], ["sports", "Depor"]].map(([v, l]) => (
-                <button key={v} onClick={() => setForm({ ...form, type: v })} style={getTypeBtnStyle(v)}>{l}</button>
+                <button type="button" key={v} onClick={() => setForm({ ...form, type: v })} style={getTypeBtnStyle(v)}>{l}</button>
               ))}
             </div>
 
             <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
-              <button onClick={() => setForm({ ...form, result: "win" })}  style={getResBtnStyle("win")}>▲ Ganancia</button>
-              <button onClick={() => setForm({ ...form, result: "loss" })} style={getResBtnStyle("loss")}>▼ Pérdida</button>
+              <button type="button" onClick={() => setForm({ ...form, result: "win" })}  style={getResBtnStyle("win")}>▲ Ganancia</button>
+              <button type="button" onClick={() => setForm({ ...form, result: "loss" })} style={getResBtnStyle("loss")}>▼ Pérdida</button>
             </div>
 
             {form.type === "sports" && (
               <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, padding: "12px 16px", background: C.gold + "15", borderRadius: 10, border: `1px solid ${C.gold}33` }}>
                 <span style={{ fontSize: 13, color: C.gold, fontWeight: "500" }}>5% recomendado:</span>
                 <span style={{ fontSize: 16, fontWeight: "bold", color: C.gold, fontFamily: fontClassic }}>${sports5pct} MXN</span>
-                <button onClick={() => setForm({ ...form, amount: String(sports5pct) })}
+                <button type="button" onClick={() => setForm({ ...form, amount: String(sports5pct) })}
                   style={{ marginLeft: "auto", fontSize: 12, padding: "6px 14px", borderRadius: 8, border: `1px solid ${C.gold}55`, background: C.gold + "22", color: C.gold, cursor: "pointer", fontWeight: "bold" }}>
                   Usar
                 </button>
@@ -894,7 +931,7 @@ export default function App() {
             <div style={{ fontSize: 11, fontWeight: "600", color: C.muted, textTransform: "uppercase", marginBottom: 8 }}>Acceso rápido</div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 20 }}>
               {(form.type === "sports" ? QUICK_SPORTS : QUICK_POKER).map((q) => (
-                <button key={q} onClick={() => setForm({ ...form, amount: String(q) })}
+                <button type="button" key={q} onClick={() => setForm({ ...form, amount: String(q) })}
                   style={{ padding: "8px 16px", borderRadius: 10, border: `1px solid ${String(form.amount) === String(q) ? C.accent : C.border}`, background: String(form.amount) === String(q) ? C.accentDim : C.surface, color: String(form.amount) === String(q) ? C.accent : C.text, fontSize: 14, cursor: "pointer", fontWeight: "600", fontFamily: fontClassic }}>
                   {form.type === "sports" ? `$${q}` : `${q}$`}
                 </button>
@@ -921,7 +958,7 @@ export default function App() {
               </div>
             </div>
 
-            <button onClick={addSession}
+            <button type="button" onClick={addSession}
               style={{ width: "100%", padding: 18, borderRadius: 12, border: "none", cursor: "pointer", background: form.result === "win" ? C.greenD : C.redD, color: form.result === "win" ? C.green : C.red, fontSize: 16, fontWeight: "bold", letterSpacing: 1 }}>
               REGISTRAR SESIÓN
             </button>
@@ -934,14 +971,15 @@ export default function App() {
         {tab === "analytics" && (
           <div>
             <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
-              {[["general", "General"], ["months", "Meses"], ["tournaments", "Torneos"]].map(([v, l]) => (
-                <button key={v} onClick={() => setAnalyticsView(v)}
-                  style={{ flex: 1, padding: "10px 6px", borderRadius: 10, border: `1px solid ${analyticsView === v ? C.accent + "88" : C.border}`, background: analyticsView === v ? C.accentDim : C.card, color: analyticsView === v ? C.accent : C.muted, fontSize: 13, cursor: "pointer", fontWeight: "600" }}>
+              {[["general", "General"], ["months", "Meses"], ["tournaments", "Torneos"], ["sports", "Deportes"]].map(([v, l]) => (
+                <button type="button" key={v} onClick={() => setAnalyticsView(v)}
+                  style={{ flex: 1, padding: "10px 4px", borderRadius: 10, border: `1px solid ${analyticsView === v ? C.accent + "88" : C.border}`, background: analyticsView === v ? C.accentDim : C.card, color: analyticsView === v ? C.accent : C.muted, fontSize: 12, cursor: "pointer", fontWeight: "600" }}>
                   {l}
                 </button>
               ))}
             </div>
 
+            {/* ANALÍTICAS GENERALES (POKER) */}
             {analyticsView === "general" && <>
               <div style={cardStyle}>
                 <div style={sectionLabelStyle}>Últimas 7 sesiones poker</div>
@@ -1034,6 +1072,7 @@ export default function App() {
               )}
             </>}
 
+            {/* ANALÍTICAS MESES (POKER) */}
             {analyticsView === "months" && (
               <div style={cardStyle}>
                 <div style={sectionLabelStyle}>Comparativa por mes — poker</div>
@@ -1064,6 +1103,7 @@ export default function App() {
               </div>
             )}
 
+            {/* ANALÍTICAS TORNEOS */}
             {analyticsView === "tournaments" && (
               <div style={cardStyle}>
                 <div style={{ ...sectionLabelStyle, color: C.gold }}>Rendimiento en torneos</div>
@@ -1092,6 +1132,66 @@ export default function App() {
                 )}
               </div>
             )}
+
+            {/* ANALÍTICAS DEPORTIVAS (NUEVO) */}
+            {analyticsView === "sports" && <>
+              <div style={cardStyle}>
+                <div style={{ ...sectionLabelStyle, color: C.accent }}>Últimas 7 apuestas</div>
+                <BarChart data={last7Sports} C={C} />
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
+                {[
+                  { label: "Win Rate",       value: sportsSessions.length ? `${sportsWinRate}%` : "—", color: sportsWinRate >= 50 ? C.green : C.red },
+                  { label: "Total Apuestas", value: sportsSessions.length, color: C.text },
+                  { label: "Mejor ganancia", value: `+$${fmt(sportsBest, 0)}`, color: C.green },
+                  { label: "Peor pérdida",   value: `$${fmt(sportsWorst, 0)}`, color: C.red },
+                ].map((m) => (
+                  <div key={m.label} style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 16, padding: 16, boxShadow: "0 4px 12px rgba(0,0,0,0.15)" }}>
+                    <div style={{ fontSize: 11, fontWeight: "600", color: C.muted, textTransform: "uppercase", marginBottom: 8 }}>{m.label}</div>
+                    <div style={{ fontSize: 26, fontWeight: "bold", color: m.color, fontFamily: fontClassic }}>{m.value}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div style={cardStyle}>
+                <div style={{ ...sectionLabelStyle, color: C.accent }}>Promedio por apuesta</div>
+                <div style={{ textAlign: "center", padding: "10px 0" }}>
+                  <div style={{ fontSize: 36, fontWeight: "bold", color: sportsAvg >= 0 ? C.green : C.red, fontFamily: fontClassic }}>
+                    {sgn(sportsAvg)}${fmt(Math.abs(sportsAvg), 0)} MXN
+                  </div>
+                  <div style={{ fontSize: 12, color: C.muted, marginTop: 8, textTransform: "uppercase", fontWeight: "600" }}>Beneficio neto promedio</div>
+                </div>
+              </div>
+
+              <div style={cardStyle}>
+                <div style={{ ...sectionLabelStyle, color: C.accent }}>Desglose por Mes — Deportes</div>
+                {sportsMonthlyBreakdown.length === 0 ? (
+                  <div style={{ textAlign: "center", color: C.textDim, fontSize: 14, padding: 24 }}>Sin datos suficientes</div>
+                ) : (
+                  sportsMonthlyBreakdown.map((m) => {
+                    const maxP    = Math.max(...sportsMonthlyBreakdown.map((x) => Math.abs(x.profit)), 1);
+                    const barPct  = Math.abs(m.profit) / maxP * 100;
+                    const isPos   = m.profit >= 0;
+                    return (
+                      <div key={m.month} style={{ marginBottom: 20 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                          <div style={{ fontSize: 14, color: C.text, fontWeight: "bold", textTransform: "uppercase", letterSpacing: 1 }}>{m.month}</div>
+                          <div style={{ display: "flex", gap: 16, fontSize: 13 }}>
+                            <span style={{ color: C.muted }}>{m.sessions} ap.</span>
+                            <span style={{ color: C.muted }}>{m.winRate}% wr</span>
+                            <span style={{ color: isPos ? C.green : C.red, fontWeight: "bold", fontFamily: fontClassic }}>{sgn(m.profit)}${fmt(Math.abs(m.profit), 0)}</span>
+                          </div>
+                        </div>
+                        <div style={{ height: 8, background: C.surface, borderRadius: 8, overflow: "hidden" }}>
+                          <div style={{ height: "100%", width: `${barPct}%`, background: isPos ? C.green : C.red, borderRadius: 8, transition: "width 0.4s ease" }} />
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </>}
           </div>
         )}
 
@@ -1105,7 +1205,7 @@ export default function App() {
               <div style={{ fontSize: 12, color: C.muted, marginBottom: 10, fontWeight: "500" }}>Posición</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
                 {POSITIONS.map((p) => (
-                  <button key={p} onClick={() => setLeakForm({ ...leakForm, position: p })}
+                  <button type="button" key={p} onClick={(e) => { e.preventDefault(); setLeakForm({ ...leakForm, position: p }); }}
                     style={{ padding: "8px 14px", borderRadius: 10, border: `1px solid ${leakForm.position === p ? C.gold : C.border}`, background: leakForm.position === p ? C.gold + "22" : C.surface, color: leakForm.position === p ? C.gold : C.text, fontSize: 13, cursor: "pointer", fontWeight: "600" }}>
                     {p}
                   </button>
@@ -1116,7 +1216,7 @@ export default function App() {
                 value={leakForm.note} onChange={(e) => setLeakForm({ ...leakForm, note: e.target.value })}
                 style={{ ...inputStyle, minHeight: 100, resize: "none", lineHeight: 1.6, marginBottom: 20 }}
               />
-              <button onClick={addLeak} style={{ width: "100%", padding: 16, borderRadius: 12, border: "none", cursor: "pointer", background: C.gold + "22", color: C.gold, fontSize: 15, fontWeight: "bold", letterSpacing: 1 }}>
+              <button type="button" onClick={addLeak} style={{ width: "100%", padding: 16, borderRadius: 12, border: "none", cursor: "pointer", background: C.gold + "22", color: C.gold, fontSize: 15, fontWeight: "bold", letterSpacing: 1 }}>
                 GUARDAR LEAK
               </button>
             </div>
@@ -1151,7 +1251,7 @@ export default function App() {
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
               <div style={sectionLabelStyle}>{showArchived ? "Archivadas" : "Historial"}</div>
-              <button onClick={() => setShowArchived(!showArchived)} style={{ fontSize: 12, background: C.surface, border: `1px solid ${C.border}`, color: C.text, padding: "8px 16px", borderRadius: 8, cursor: "pointer", fontWeight: "600" }}>
+              <button type="button" onClick={(e) => { e.preventDefault(); setShowArchived(!showArchived); }} style={{ fontSize: 12, background: C.surface, border: `1px solid ${C.border}`, color: C.text, padding: "8px 16px", borderRadius: 8, cursor: "pointer", fontWeight: "600" }}>
                 {showArchived ? "Ver activas" : "Archivadas"}
               </button>
             </div>
@@ -1235,7 +1335,7 @@ export default function App() {
               <div style={{ fontSize: 12, color: C.muted, marginBottom: 12, fontWeight: "500" }}>Color del tema</div>
               <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
                 {ACCENT_PRESETS.map((p) => (
-                  <button key={p.v} onClick={() => handleSetAccent(p.v)}
+                  <button type="button" key={p.v} onClick={(e) => { e.preventDefault(); handleSetAccent(p.v); }}
                     style={{ width: 36, height: 36, borderRadius: "50%", border: `2px solid ${accent === p.v ? "#fff" : "transparent"}`, background: p.v, cursor: "pointer", boxShadow: accent === p.v ? `0 0 0 2px ${p.v}` : "none", transition: "all 0.2s" }} />
                 ))}
               </div>
@@ -1245,7 +1345,7 @@ export default function App() {
                   <div style={{ fontSize: 11, color: C.muted, marginBottom: 10, textTransform: "uppercase", fontWeight: "600" }}>Recientes</div>
                   <div style={{ display: "flex", gap: 12 }}>
                     {recentColors.map((col) => (
-                      <button key={col} onClick={() => handleSetAccent(col)}
+                      <button type="button" key={col} onClick={(e) => { e.preventDefault(); handleSetAccent(col); }}
                         style={{ width: 32, height: 32, borderRadius: "50%", border: `2px solid ${accent === col ? "#fff" : "transparent"}`, background: col, cursor: "pointer", boxShadow: accent === col ? `0 0 0 2px ${col}` : "none" }} />
                     ))}
                   </div>
@@ -1259,14 +1359,14 @@ export default function App() {
                   style={{ ...inputStyle, padding: "10px 16px", flex: 1 }}
                   maxLength={7}
                 />
-                <button
-                  onClick={() => { if (isValid(customHex)) { handleSetAccent(customHex); setCustomHex(""); } else alert("Hex inválido. Usa formato #RRGGBB"); }}
+                <button type="button" 
+                  onClick={(e) => { e.preventDefault(); if (isValid(customHex)) { handleSetAccent(customHex); setCustomHex(""); } else alert("Hex inválido. Usa formato #RRGGBB"); }}
                   style={{ padding: "10px 20px", borderRadius: 10, border: `1px solid ${C.border}`, background: customHex && isValid(customHex) ? customHex + "33" : C.surface, color: C.text, fontSize: 14, cursor: "pointer", fontWeight: "600" }}>
                   Aplicar
                 </button>
               </div>
 
-              <button onClick={saveConfig} style={{ width: "100%", padding: 16, borderRadius: 12, border: "none", background: C.accentDim, color: C.accent, fontSize: 14, cursor: "pointer", fontWeight: "bold", letterSpacing: 1 }}>
+              <button type="button" onClick={saveConfig} style={{ width: "100%", padding: 16, borderRadius: 12, border: "none", background: C.accentDim, color: C.accent, fontSize: 14, cursor: "pointer", fontWeight: "bold", letterSpacing: 1 }}>
                 GUARDAR CONFIGURACIÓN
               </button>
             </div>
@@ -1279,7 +1379,7 @@ export default function App() {
               { k: "casino", l: "Casino — Prohibido", c: C.red },
             ].map((sec) => (
               <div key={sec.k} style={{ marginBottom: 12 }}>
-                <button onClick={() => setRulesOpen(rulesOpen === sec.k ? null : sec.k)}
+                <button type="button" onClick={(e) => { e.preventDefault(); setRulesOpen(rulesOpen === sec.k ? null : sec.k); }}
                   style={{ width: "100%", textAlign: "left", padding: "16px 20px", borderRadius: rulesOpen === sec.k ? "12px 12px 0 0" : 12, border: `1px solid ${rulesOpen === sec.k ? sec.c + "55" : C.border}`, background: C.card, color: sec.c, fontSize: 15, fontWeight: "bold", cursor: "pointer", display: "flex", justifyContent: "space-between" }}>
                   {sec.l} <span style={{ color: C.muted }}>{rulesOpen === sec.k ? "▲" : "▼"}</span>
                 </button>
@@ -1297,21 +1397,21 @@ export default function App() {
 
             <div style={{ marginTop: 32, borderTop: `1px solid ${C.border}`, paddingTop: 24 }}>
               {pushStatus !== "Activas" && (
-                <button onClick={requestNotificationPermission}
+                <button type="button" onClick={requestNotificationPermission}
                   style={{ width: "100%", padding: 16, marginBottom: 12, borderRadius: 12, border: `1px solid ${C.accentMid}`, background: C.accentDim, color: C.accent, fontSize: 14, cursor: "pointer", fontWeight: "bold", letterSpacing: 1 }}>
                   🔔 Activar alertas · {pushStatus}
                 </button>
               )}
 
-              <button onClick={exportCSV}
+              <button type="button" onClick={exportCSV}
                 style={{ width: "100%", padding: 16, marginBottom: 12, borderRadius: 12, border: `1px solid ${C.border}`, background: C.surface, color: C.text, fontSize: 14, cursor: "pointer", fontWeight: "600" }}>
                 📥 Exportar historial CSV
               </button>
 
-              <button onClick={handleLogout} style={{ width: "100%", padding: 16, marginBottom: 12, borderRadius: 12, background: "transparent", border: `1px solid ${C.muted}`, color: C.textDim, fontSize: 14, cursor: "pointer", fontWeight: "600" }}>
+              <button type="button" onClick={handleLogout} style={{ width: "100%", padding: 16, marginBottom: 12, borderRadius: 12, background: "transparent", border: `1px solid ${C.muted}`, color: C.textDim, fontSize: 14, cursor: "pointer", fontWeight: "600" }}>
                 CERRAR SESIÓN
               </button>
-              <button onClick={archiveAll} style={{ width: "100%", padding: 16, borderRadius: 12, background: "transparent", border: `1px solid ${C.redD}`, color: C.red, fontSize: 13, cursor: "pointer", fontWeight: "bold", marginTop: 24 }}>
+              <button type="button" onClick={archiveAll} style={{ width: "100%", padding: 16, borderRadius: 12, background: "transparent", border: `1px solid ${C.redD}`, color: C.red, fontSize: 13, cursor: "pointer", fontWeight: "bold", marginTop: 24 }}>
                 ARCHIVAR Y RESETEAR DATOS
               </button>
             </div>
@@ -1331,7 +1431,7 @@ export default function App() {
             { k: "hist",      icon: "≡", l: "Historial"},
             { k: "rules",     icon: "◉", l: "Config"   },
           ].map((t) => (
-            <button key={t.k} onClick={() => setTab(t.k)}
+            <button type="button" key={t.k} onClick={(e) => { e.preventDefault(); setTab(t.k); }}
               style={{ flex: 1, padding: "16px 4px 12px", border: "none", background: "transparent", cursor: "pointer", color: tab === t.k ? C.accent : C.muted, transition: "color 0.2s" }}>
               <div style={{ fontSize: 18, marginBottom: 4 }}>{t.icon}</div>
               <div style={{ fontSize: 10, fontWeight: "600", textTransform: "uppercase" }}>{t.l}</div>
